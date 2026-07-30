@@ -20,9 +20,42 @@ chmod +x exceltocsv-linux-amd64
 
 ### WASI module
 
-Download `exceltocsv.wasm` from the [Releases page](../../releases). A `.sha256` checksum file is included.
+```sh
+curl -fL https://github.com/bruceoutdoors/exceltocsv/releases/latest/download/exceltocsv.wasm \
+  -o exceltocsv.wasm
+curl -fL https://github.com/bruceoutdoors/exceltocsv/releases/latest/download/exceltocsv.wasm.sha256 \
+  | sha256sum -c
+```
 
 ## Usage
+
+```
+exceltocsv --help
+Convert Excel files to CSV
+
+Usage: exceltocsv [OPTIONS] [INPUT]
+
+Arguments:
+  [INPUT]  Input Excel file (.xls, .xlsx); omit or use - to read from stdin
+
+Options:
+  -f, --format <FMT>              Force input format: xls or xlsx (required for stdin if auto-detection fails) [possible values: xls, xlsx]
+  -n, --names                     Print worksheet names to stdout and exit
+      --sheet <NAME>              Select worksheet by name (default: first sheet)
+      --write-sheets <SHEETS>     Write sheets to .csv files; - for all, or comma-separated names
+      --use-sheet-names           Use sheet names as output filenames (requires --write-sheets)
+  -D, --out-delimiter <CHAR>      Output CSV delimiter character (default: comma)
+  -T, --out-tabs                  Use tab as delimiter
+  -Q, --out-quotechar <CHAR>      CSV quote character (default: double-quote)
+  -U, --out-quoting <MODE>        Quoting mode: 0=minimal 1=all 2=nonnumeric 3=none (mode 3 requires --out-escapechar)
+  -B, --out-no-doublequote        Disable double-quote escaping; use escape character instead
+  -P, --out-escapechar <CHAR>     Escape character (used with --out-no-doublequote or --out-quoting 3)
+  -M, --out-lineterminator <EOL>  Line terminator: lf (default) or crlf [possible values: lf, crlf]
+  -h, --help                      Print help
+  -V, --version                   Print version
+```
+
+### Examples
 
 ```bash
 # Convert first sheet to CSV on stdout
@@ -43,6 +76,20 @@ exceltocsv --out-tabs input.xlsx > output.tsv
 
 # Write all sheets to individual CSV files
 exceltocsv --write-sheets - --use-sheet-names input.xlsx
+```
+
+### With wasmtime
+
+```bash
+# Stdin input (format auto-detected)
+wasmtime run exceltocsv.wasm < input.xlsx > output.csv
+
+# Pass flags using -- to separate wasmtime args from module args
+wasmtime run exceltocsv.wasm -- -f xls < input.xls > output.csv
+wasmtime run exceltocsv.wasm -- --sheet "Sales Q1" < input.xlsx > output.csv
+
+# File input (requires granting directory access)
+wasmtime run --dir . exceltocsv.wasm input.xlsx > output.csv
 ```
 
 Run `exceltocsv --help` for all options.
