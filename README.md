@@ -2,9 +2,9 @@
 
 CLI to convert Excel files (XLS, XLSX) to CSV. Available as a Linux binary and as a WASI module for embedding in host runtimes.
 
-## Why this exists
+## Why
 
-Several capable Excel-to-CSV converters already exist. Lightweight options commonly require a language runtime, while office-suite converters are much larger dependencies, and browser-oriented WebAssembly packages are not standalone WASI command modules. exceltocsv packages this narrow conversion as a Linux CLI and WASI module for applications that want to run it within their own resource and capability limits. It is intentionally not a general spreadsheet engine.
+Several capable Excel-to-CSV converters already exist. Lightweight options commonly require a language runtime, while office-suite converters are much larger dependencies, and browser-oriented WebAssembly packages are not standalone WASI command modules. exceltocsv packages this narrow conversion as a Linux CLI and WASI module for applications that want to run it within their own resource and capability limits.
 
 ## Install
 
@@ -91,8 +91,6 @@ wasmtime run exceltocsv.wasm -- --sheet "Sales Q1" < input.xlsx > output.csv
 # File input (requires granting directory access)
 wasmtime run --dir . exceltocsv.wasm input.xlsx > output.csv
 ```
-
-Run `exceltocsv --help` for all options.
 
 ## Build
 
