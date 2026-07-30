@@ -4,6 +4,11 @@ use std::io::{self, BufReader, Cursor, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+
+// XLSX file-format limits per ISO 29500 §18.3.1.35
+const XLSX_MAX_ROW: u32 = 1_048_576;
+const XLSX_MAX_COL: u32 = 16_384;
+
 use calamine::{
     open_workbook_auto, open_workbook_auto_from_rs, open_workbook_from_rs, Data, DataRef, Range,
     Reader, Sheets, Xls, Xlsx,
@@ -137,10 +142,6 @@ fn main() -> Result<()> {
 }
 
 fn process_workbook<RS: Read + Seek>(wb: &mut Sheets<RS>, args: &Args) -> Result<()> {
-    if matches!(wb, Sheets::Xlsb(_) | Sheets::Ods(_)) {
-        anyhow::bail!("unsupported format: only XLS (.xls) and XLSX (.xlsx) are accepted");
-    }
-
     let sheet_names = wb.sheet_names();
 
     if args.names {
@@ -227,6 +228,9 @@ fn convert_sheet<RS: Read + Seek>(
 ) -> Result<()> {
     match wb {
         Sheets::Xlsx(xlsx) => write_xlsx_streaming(xlsx, name, writer, args),
+        Sheets::Xlsb(_) | Sheets::Ods(_) => {
+            anyhow::bail!("unsupported format: only XLS (.xls) and XLSX (.xlsx) are accepted")
+        }
         _ => {
             let range = wb
                 .worksheet_range(name)
@@ -242,21 +246,12 @@ fn write_xlsx_streaming<RS: Read + Seek>(
     writer: impl Write,
     args: &Args,
 ) -> Result<()> {
-    const MAX_ROW: u32 = 1_048_576;
-    const MAX_COL: u32 = 16_384;
-
     let mut cells = xlsx
         .worksheet_cells_reader(name)
         .map_err(|e| anyhow::anyhow!("sheet '{name}' not found: {e}"))?;
 
-    // Use declared dimensions for record width; bail if they exceed XLSX limits.
-    // This is safe because:
-    //   (a) cells outside declared bounds are rejected as malformed below,
-    //   (b) duplicate/out-of-order cells are rejected, preventing unbounded
-    //       row_buf growth, and
-    //   (c) the maximum width is capped at MAX_COL = 16 384 columns.
     let d = cells.dimensions();
-    if d.end.0 >= MAX_ROW || d.end.1 >= MAX_COL {
+    if d.end.0 >= XLSX_MAX_ROW || d.end.1 >= XLSX_MAX_COL {
         anyhow::bail!(
             "sheet declares ({} rows × {} cols) exceeding XLSX limits",
             d.end.0 + 1,
@@ -267,19 +262,17 @@ fn write_xlsx_streaming<RS: Read + Seek>(
 
     let mut wtr = build_csv_writer(writer, args);
     let mut prev_pos: Option<(u32, u32)> = None;
-    let mut cur_row: Option<u32> = None;
     let mut row_buf: Vec<String> = Vec::with_capacity(n_cols);
 
     while let Some(cell) = cells.next_cell().map_err(|e| anyhow::anyhow!("{e}"))? {
         let (row, col) = cell.get_position();
-        if row >= MAX_ROW || col >= MAX_COL {
-            anyhow::bail!("cell at ({row},{col}) exceeds XLSX limits");
+        if row > d.end.0 || col > d.end.1 {
+            anyhow::bail!(
+                "cell at ({row},{col}) outside declared sheet bounds ({} rows × {} cols)",
+                d.end.0 + 1,
+                d.end.1 + 1
+            );
         }
-        // Reject cells outside declared sheet extents (malformed file).
-        if col as usize >= n_cols {
-            anyhow::bail!("cell at col {col} is outside declared sheet width ({n_cols} cols)");
-        }
-        // Require strict ordering to prevent duplicate-cell row_buf amplification.
         if let Some(p) = prev_pos {
             if (row, col) <= p {
                 anyhow::bail!(
@@ -289,28 +282,37 @@ fn write_xlsx_streaming<RS: Read + Seek>(
                 );
             }
         }
-        prev_pos = Some((row, col));
 
-        if Some(row) != cur_row {
-            if let Some(prev_row) = cur_row {
-                row_buf.resize(n_cols, String::new());
-                wtr.write_record(row_buf.iter())?;
+        let prev_row = prev_pos.map(|(r, _)| r);
+        if Some(row) != prev_row {
+            if let Some(pr) = prev_row {
+                let tail = n_cols - row_buf.len();
+                wtr.write_record(
+                    row_buf
+                        .iter()
+                        .map(String::as_str)
+                        .chain(std::iter::repeat_n("", tail)),
+                )?;
                 row_buf.clear();
-                for _ in (prev_row + 1)..row {
+                for _ in (pr + 1)..row {
                     wtr.write_record(std::iter::repeat_n("", n_cols))?;
                 }
             }
-            cur_row = Some(row);
         }
 
-        // Fill column gap; strictly increasing col guarantees this only grows row_buf.
+        prev_pos = Some((row, col));
         row_buf.resize(col as usize, String::new());
         row_buf.push(render_data_ref(cell.get_value()));
     }
 
-    if cur_row.is_some() {
-        row_buf.resize(n_cols, String::new());
-        wtr.write_record(row_buf.iter())?;
+    if prev_pos.is_some() {
+        let tail = n_cols - row_buf.len();
+        wtr.write_record(
+            row_buf
+                .iter()
+                .map(String::as_str)
+                .chain(std::iter::repeat_n("", tail)),
+        )?;
     }
 
     wtr.flush()?;
