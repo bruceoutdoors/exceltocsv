@@ -10,34 +10,26 @@ User-uploaded Excel files need to be converted to CSV inside a narrow, embeddabl
 
 This is not a general-purpose spreadsheet engine. It is a small, auditable Excel-to-CSV converter. The entire conversion path is: read Excel with `calamine`, stream rows through the `csv` crate, write to stdout. Nothing more.
 
-## Build
+## Install
 
-**Native binary:**
+Download the latest binary from the [GitHub Releases page](../../releases).
+
+**Linux (native binary):**
 
 ```bash
-cargo build --release
-# artifact: target/release/exceltocsv
+curl -L https://github.com/bruceoutdoors/exceltocsv/releases/latest/download/exceltocsv-linux-amd64 -o exceltocsv
+chmod +x exceltocsv
+```
+
+Verify the checksum:
+
+```bash
+curl -L https://github.com/bruceoutdoors/exceltocsv/releases/latest/download/exceltocsv-linux-amd64.sha256 | sha256sum -c
 ```
 
 **WASI module:**
 
-```bash
-cargo build --target wasm32-wasip1 --release
-# artifact: target/wasm32-wasip1/release/exceltocsv.wasm
-```
-
-Strip debug symbols to reduce WASM size:
-
-```bash
-wasm-tools strip target/wasm32-wasip1/release/exceltocsv.wasm -o exceltocsv.wasm
-```
-
-**Prerequisites:** Rust >= 1.88, `wasm32-wasip1` target, and `wasm-tools`.
-
-```bash
-rustup target add wasm32-wasip1
-cargo install wasm-tools
-```
+Download `exceltocsv.wasm` and `exceltocsv.wasm.sha256` from the releases page.
 
 ## Usage
 
@@ -82,6 +74,35 @@ Full option reference:
 
 Note: CSV output uses LF line endings (`\n`). RFC 4180 specifies CRLF but LF is conventional on Unix and avoids test friction.
 
+## Build
+
+**Prerequisites:** Rust >= 1.88, `wasm32-wasip1` target, and `wasm-tools`.
+
+```bash
+rustup target add wasm32-wasip1
+cargo install wasm-tools
+```
+
+**Native binary:**
+
+```bash
+cargo build --release
+# artifact: target/release/exceltocsv
+```
+
+**WASI module:**
+
+```bash
+cargo build --target wasm32-wasip1 --release
+# artifact: target/wasm32-wasip1/release/exceltocsv.wasm
+```
+
+Strip debug symbols to reduce WASM size:
+
+```bash
+wasm-tools strip target/wasm32-wasip1/release/exceltocsv.wasm -o exceltocsv.wasm
+```
+
 ## Testing
 
 Correctness is verified against known XLS/XLSX fixtures with exact expected CSV outputs.
@@ -116,13 +137,10 @@ cargo test
 
 Tests assert exact byte-for-byte CSV output against files in `tests/expected/`.
 
-## Release artifacts
+## Alternatives
 
-Each GitHub release includes:
+If you need a general-purpose Excel-to-CSV converter without the WASI constraint, these tools cover more ground:
 
-- `exceltocsv-linux-amd64` — native Linux binary
-- `exceltocsv-linux-amd64.sha256` — SHA256 checksum
-- `exceltocsv.wasm` — WASI module (debug symbols stripped)
-- `exceltocsv.wasm.sha256` — SHA256 checksum
-
-Find releases at the [GitHub Releases page](../../releases).
+- [in2csv](https://csvkit.readthedocs.io/en/latest/scripts/in2csv.html) (Python, part of csvkit) — the CLI that inspired this tool's flag set
+- [xsv](https://github.com/BurntSushi/xsv) — fast CSV toolkit in Rust, handles CSV manipulation once you have the CSV
+- [ssconvert](https://wiki.gnome.org/Projects/Gnumeric/ssconvert) — part of Gnumeric, converts between many spreadsheet formats
