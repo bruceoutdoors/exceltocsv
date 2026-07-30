@@ -5,72 +5,11 @@ on:
     types: [published]
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-
-      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c  # master
-        with:
-          toolchain: stable
-
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
-        with:
-          shared-key: rust
-
-      - run: cargo test
-
-  build:
-    needs: test
-    permissions:
-      contents: write
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            binary: exceltocsv-linux-amd64
-            ext: ""
-          - os: macos-latest
-            binary: exceltocsv-macos-arm64
-            ext: ""
-          - os: macos-13
-            binary: exceltocsv-macos-amd64
-            ext: ""
-          - os: windows-latest
-            binary: exceltocsv-windows-amd64
-            ext: .exe
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-
-      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c  # master
-        with:
-          toolchain: stable
-
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
-        with:
-          shared-key: rust
-
-      - run: cargo build --release
-
-      - name: Package binary
-        shell: bash
-        run: |
-          cp target/release/exceltocsv${{ matrix.ext }} ${{ matrix.binary }}${{ matrix.ext }}
-          sha256sum ${{ matrix.binary }}${{ matrix.ext }} > ${{ matrix.binary }}${{ matrix.ext }}.sha256
-
-      - uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228  # v3.0.2
-        with:
-          files: |
-            ${{ matrix.binary }}${{ matrix.ext }}
-            ${{ matrix.binary }}${{ matrix.ext }}.sha256
-
-  wasm:
-    needs: test
+  release:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
@@ -81,7 +20,11 @@ jobs:
 
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
         with:
-          shared-key: rust-wasm
+          shared-key: rust
+
+      - run: cargo test
+
+      - run: cargo build --release
 
       - run: cargo build --target wasm32-wasip1 --release
 
@@ -91,11 +34,16 @@ jobs:
       - name: Strip WASM debug symbols
         run: wasm-tools strip target/wasm32-wasip1/release/exceltocsv.wasm -o exceltocsv.wasm
 
-      - name: Generate checksum
-        run: sha256sum exceltocsv.wasm > exceltocsv.wasm.sha256
+      - name: Package artifacts
+        run: |
+          cp target/release/exceltocsv exceltocsv-linux-amd64
+          sha256sum exceltocsv-linux-amd64 > exceltocsv-linux-amd64.sha256
+          sha256sum exceltocsv.wasm > exceltocsv.wasm.sha256
 
       - uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228  # v3.0.2
         with:
           files: |
+            exceltocsv-linux-amd64
+            exceltocsv-linux-amd64.sha256
             exceltocsv.wasm
             exceltocsv.wasm.sha256

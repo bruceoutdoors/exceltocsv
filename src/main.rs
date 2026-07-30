@@ -1,21 +1,23 @@
-use std::fs::File;
-use std::io::{self, BufWriter, Write};
-use std::path::PathBuf;
+use std::collections::HashMap;
+use std::io::{self, BufWriter, Cursor, Read, Write};
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use calamine::{open_workbook_auto, Data, Range, Reader};
+use calamine::{
+    open_workbook_auto_from_rs, open_workbook_from_rs, Data, Range, Reader, Sheets, Xls, Xlsx,
+};
 use clap::{Parser, ValueEnum};
 use csv::WriterBuilder;
 
 #[derive(Parser, Debug)]
 #[command(name = "exceltocsv", about = "Convert Excel files to CSV", version)]
 struct Args {
-    /// Input Excel file (.xls, .xlsx, .xlsb, .ods)
-    input: PathBuf,
+    /// Input Excel file (.xls, .xlsx); omit or use - to read from stdin
+    input: Option<PathBuf>,
 
-    /// Explicit format override (informational in v0.1.0; format is auto-detected)
+    /// Force input format: xls or xlsx (required for stdin if auto-detection fails)
     #[arg(short = 'f', long, value_name = "FMT")]
-    format: Option<String>,
+    format: Option<Format>,
 
     /// Print worksheet names to stdout and exit
     #[arg(short = 'n', long)]
@@ -25,27 +27,19 @@ struct Args {
     #[arg(long, value_name = "NAME")]
     sheet: Option<String>,
 
-    /// Comma-separated sheet names (or "all") to write to individual .csv files
+    /// Write all sheets to .csv files; use - for all, or comma-separated sheet names
     #[arg(long = "write-sheets", value_name = "SHEETS")]
     write_sheets: Option<String>,
 
-    /// Use sheet names as output filenames (used with --write-sheets)
-    #[arg(long = "use-sheet-names")]
+    /// Use sheet names as output filenames (requires --write-sheets)
+    #[arg(long = "use-sheet-names", requires = "write_sheets")]
     use_sheet_names: bool,
-
-    /// Ignored in v0.1.0: calamine always uses declared worksheet dimensions
-    #[arg(long = "reset-dimensions")]
-    reset_dimensions: bool,
-
-    /// Encoding hint for legacy XLS files (informational in v0.1.0; calamine defaults to CP1252)
-    #[arg(long = "encoding-xls", value_name = "ENCODING")]
-    encoding_xls: Option<String>,
 
     /// Output CSV delimiter character (default: comma)
     #[arg(short = 'd', long, value_name = "CHAR", value_parser = parse_ascii_byte)]
     delimiter: Option<u8>,
 
-    /// Use tab as delimiter (shorthand for -d '\t')
+    /// Use tab as delimiter
     #[arg(short = 't', long, conflicts_with = "delimiter")]
     tabs: bool,
 
@@ -64,10 +58,12 @@ struct Args {
     /// Escape character (used when --no-doublequote is set)
     #[arg(short = 'p', long, value_name = "CHAR", value_parser = parse_ascii_byte)]
     escapechar: Option<u8>,
+}
 
-    /// Field size limit in bytes (informational; no enforcement in v0.1.0)
-    #[arg(short = 'z', long = "field-size-limit", value_name = "N")]
-    field_size_limit: Option<u64>,
+#[derive(Clone, Debug, ValueEnum)]
+enum Format {
+    Xls,
+    Xlsx,
 }
 
 #[derive(Clone, Debug, ValueEnum)]
@@ -80,33 +76,44 @@ enum QuoteMode {
 
 fn main() -> Result<()> {
     let args = Args::parse();
+    let bytes = load_input(&args.input)?;
+    let cursor = Cursor::new(bytes);
 
-    if args.format.is_some() {
-        eprintln!(
-            "warning: --format is informational in v0.1.0; \
-             format is detected automatically from the file extension"
-        );
-    }
-    if args.reset_dimensions {
-        eprintln!(
-            "warning: --reset-dimensions is not yet implemented; \
-             calamine always uses declared worksheet dimensions"
-        );
-    }
-    if args.encoding_xls.is_some() {
-        eprintln!(
-            "warning: --encoding-xls is informational in v0.1.0; \
-             calamine uses CP1252 as the XLS fallback encoding"
-        );
-    }
-    if args.field_size_limit.is_some() {
-        eprintln!("warning: --field-size-limit is informational in v0.1.0; no limit is enforced");
-    }
+    let mut wb: Sheets<Cursor<Vec<u8>>> = match args.format {
+        Some(Format::Xls) => open_workbook_from_rs::<Xls<_>, _>(cursor)
+            .map(Sheets::Xls)
+            .map_err(|e| anyhow::anyhow!("failed to open workbook as XLS: {e}"))?,
+        Some(Format::Xlsx) => open_workbook_from_rs::<Xlsx<_>, _>(cursor)
+            .map(Sheets::Xlsx)
+            .map_err(|e| anyhow::anyhow!("failed to open workbook as XLSX: {e}"))?,
+        None => open_workbook_auto_from_rs(cursor).map_err(|_| {
+            anyhow::anyhow!(
+                "cannot detect workbook format; try specifying --format xls or --format xlsx"
+            )
+        })?,
+    };
 
-    let mut workbook = open_workbook_auto(&args.input)
-        .with_context(|| format!("cannot open '{}'", args.input.display()))?;
+    process_workbook(&mut wb, &args)
+}
 
-    let sheet_names = workbook.sheet_names().to_vec();
+fn load_input(input: &Option<PathBuf>) -> Result<Vec<u8>> {
+    match input {
+        None => read_stdin(),
+        Some(p) if p == Path::new("-") => read_stdin(),
+        Some(p) => std::fs::read(p).with_context(|| format!("cannot open '{}'", p.display())),
+    }
+}
+
+fn read_stdin() -> Result<Vec<u8>> {
+    let mut buf = Vec::new();
+    io::stdin()
+        .read_to_end(&mut buf)
+        .context("failed to read stdin")?;
+    Ok(buf)
+}
+
+fn process_workbook(wb: &mut Sheets<Cursor<Vec<u8>>>, args: &Args) -> Result<()> {
+    let sheet_names = wb.sheet_names().to_vec();
 
     if args.names {
         for name in &sheet_names {
@@ -116,27 +123,36 @@ fn main() -> Result<()> {
     }
 
     if let Some(ref spec) = args.write_sheets {
-        let targets: Vec<&str> = if spec.eq_ignore_ascii_case("all") {
-            sheet_names.iter().map(String::as_str).collect()
+        let targets: Vec<String> = if spec == "-" {
+            sheet_names.clone()
         } else {
-            spec.split(',').map(str::trim).collect()
+            spec.split(',').map(|s| s.trim().to_owned()).collect()
         };
 
-        for name in targets {
-            let range = workbook
+        let mut used: HashMap<String, usize> = HashMap::new();
+        for name in &targets {
+            let range = wb
                 .worksheet_range(name)
                 .with_context(|| format!("sheet '{name}' not found"))?;
 
-            let filename = if args.use_sheet_names {
-                format!("{name}.csv")
+            let base = if args.use_sheet_names {
+                sanitize_sheet_name(name)
             } else {
                 let idx = sheet_names.iter().position(|s| s == name).unwrap_or(0);
-                format!("sheet{}.csv", idx + 1)
+                format!("sheet{}", idx + 1)
             };
 
-            let file =
-                File::create(&filename).with_context(|| format!("cannot create '{filename}'"))?;
-            write_range(&range, BufWriter::new(file), &args)?;
+            let count = used.entry(base.clone()).or_insert(0);
+            let filename = if *count == 0 {
+                format!("{base}.csv")
+            } else {
+                format!("{base}_{count}.csv")
+            };
+            *count += 1;
+
+            let file = std::fs::File::create(&filename)
+                .with_context(|| format!("cannot create '{filename}'"))?;
+            write_range(&range, BufWriter::new(file), args)?;
         }
         return Ok(());
     }
@@ -147,12 +163,30 @@ fn main() -> Result<()> {
         .or_else(|| sheet_names.first().map(String::as_str))
         .context("workbook has no sheets")?;
 
-    let range = workbook
+    let range = wb
         .worksheet_range(sheet_name)
         .with_context(|| format!("sheet '{sheet_name}' not found"))?;
 
     let stdout = io::stdout();
-    write_range(&range, stdout.lock(), &args)
+    write_range(&range, stdout.lock(), args)
+}
+
+fn sanitize_sheet_name(name: &str) -> String {
+    let s: String = name
+        .chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+            c if c.is_control() => '_',
+            c => c,
+        })
+        .collect();
+
+    let s = s.trim();
+    match s {
+        "" | "." | ".." => "sheet".to_string(),
+        s if s.starts_with('.') => format!("_{}", &s[1..]),
+        s => s.to_string(),
+    }
 }
 
 fn write_range<W: Write>(range: &Range<Data>, writer: W, args: &Args) -> Result<()> {

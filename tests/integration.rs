@@ -1,5 +1,6 @@
+use std::io::Write;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 fn bin() -> Command {
     Command::new(env!("CARGO_BIN_EXE_exceltocsv"))
@@ -22,10 +23,43 @@ fn run_in(dir: &Path, args: &[&str]) -> (String, String, bool) {
     )
 }
 
+fn run_with_stdin(args: &[&str], stdin_bytes: &[u8]) -> (String, String, bool) {
+    let mut child = bin()
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn exceltocsv");
+    child
+        .stdin
+        .take()
+        .expect("no stdin")
+        .write_all(stdin_bytes)
+        .expect("write failed");
+    let out = child.wait_with_output().expect("wait failed");
+    (
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+        out.status.success(),
+    )
+}
+
 fn expected(name: &str) -> String {
     std::fs::read_to_string(Path::new("tests/expected").join(name))
         .unwrap_or_else(|_| panic!("missing tests/expected/{name}"))
 }
+
+fn fixture_bytes(name: &str) -> Vec<u8> {
+    std::fs::read(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures")
+            .join(name),
+    )
+    .unwrap_or_else(|_| panic!("missing tests/fixtures/{name}"))
+}
+
+// ── File input tests ──────────────────────────────────────────────────────────
 
 #[test]
 fn simple_xlsx() {
@@ -98,17 +132,14 @@ fn write_sheets_all() {
     let dir = tempfile::tempdir().expect("tempdir");
     let (_, err, ok) = run_in(
         dir.path(),
-        &["--write-sheets", "all", fixture.to_str().unwrap()],
+        &["--write-sheets", "-", fixture.to_str().unwrap()],
     );
     assert!(ok, "{err}");
-    assert!(
-        dir.path().join("sheet1.csv").exists(),
-        "sheet1.csv not created"
-    );
-    assert!(
-        dir.path().join("sheet2.csv").exists(),
-        "sheet2.csv not created"
-    );
+
+    let s1 = std::fs::read_to_string(dir.path().join("sheet1.csv")).expect("sheet1.csv missing");
+    let s2 = std::fs::read_to_string(dir.path().join("sheet2.csv")).expect("sheet2.csv missing");
+    assert_eq!(s1, expected("multiple_sheets_sheet1.csv"));
+    assert_eq!(s2, expected("multiple_sheets_sheet2.csv"));
 }
 
 #[test]
@@ -119,20 +150,17 @@ fn write_sheets_use_names() {
         dir.path(),
         &[
             "--write-sheets",
-            "all",
+            "-",
             "--use-sheet-names",
             fixture.to_str().unwrap(),
         ],
     );
     assert!(ok, "{err}");
-    assert!(
-        dir.path().join("Sheet1.csv").exists(),
-        "Sheet1.csv not created"
-    );
-    assert!(
-        dir.path().join("Sheet2.csv").exists(),
-        "Sheet2.csv not created"
-    );
+
+    let s1 = std::fs::read_to_string(dir.path().join("Sheet1.csv")).expect("Sheet1.csv missing");
+    let s2 = std::fs::read_to_string(dir.path().join("Sheet2.csv")).expect("Sheet2.csv missing");
+    assert_eq!(s1, expected("multiple_sheets_sheet1.csv"));
+    assert_eq!(s2, expected("multiple_sheets_sheet2.csv"));
 }
 
 #[test]
@@ -145,4 +173,46 @@ fn nonexistent_file() {
 fn missing_sheet_name() {
     let (_, _, ok) = run(&["--sheet", "NoSuchSheet", "tests/fixtures/simple.xlsx"]);
     assert!(!ok, "expected non-zero exit for missing sheet");
+}
+
+// ── Stdin input tests ─────────────────────────────────────────────────────────
+
+#[test]
+fn stdin_xlsx_explicit_dash() {
+    let bytes = fixture_bytes("simple.xlsx");
+    let (out, _, ok) = run_with_stdin(&["-"], &bytes);
+    assert!(ok);
+    assert_eq!(out, expected("simple.csv"));
+}
+
+#[test]
+fn stdin_xlsx_no_arg() {
+    let bytes = fixture_bytes("simple.xlsx");
+    let (out, _, ok) = run_with_stdin(&[], &bytes);
+    assert!(ok);
+    assert_eq!(out, expected("simple.csv"));
+}
+
+#[test]
+fn stdin_xlsx_format_flag() {
+    let bytes = fixture_bytes("simple.xlsx");
+    let (out, _, ok) = run_with_stdin(&["-f", "xlsx"], &bytes);
+    assert!(ok);
+    assert_eq!(out, expected("simple.csv"));
+}
+
+#[test]
+fn stdin_xls_format_flag() {
+    let bytes = fixture_bytes("simple.xls");
+    let (out, _, ok) = run_with_stdin(&["-f", "xls"], &bytes);
+    assert!(ok);
+    assert_eq!(out, expected("simple_xls.csv"));
+}
+
+#[test]
+fn stdin_xls_auto_detect() {
+    let bytes = fixture_bytes("simple.xls");
+    let (out, _, ok) = run_with_stdin(&["-"], &bytes);
+    assert!(ok);
+    assert_eq!(out, expected("simple_xls.csv"));
 }

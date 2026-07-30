@@ -1,50 +1,46 @@
 # exceltocsv
 
-CLI to convert Excel files (XLS, XLSX) to CSV. Use as a native binaries, and as a WASI module for embedding in host runtimes.
+CLI to convert Excel files (XLS, XLSX) to CSV. Ships as a Linux binary and as a WASI module for embedding in host runtimes.
 
- - Lightweight, fast, with no runtime dependencies
- - Embeddable to applications via WASI - sandbox untrusted excel files with restrictions to resources and capabilities.
+- Lightweight, fast, with no runtime dependencies
+- Embeddable via WASI — sandbox untrusted workbooks with fine-grained resource and capability limits
+
+## Why this exists
+
+Existing converters (Python's in2csv, xlsx2csv) require a Python runtime. Heavier tools (LibreOffice, Gnumeric's ssconvert) are large system dependencies. Browser-oriented WebAssembly packages target JavaScript runtimes, not WASI. Direct library integration works but produces a one-off binary rather than a reusable conversion boundary. This tool fills the gap: a small, auditable XLS/XLSX-to-CSV converter distributed as a stripped WASI module for sandboxed embedding, with a Linux binary for direct use and scripting.
 
 ## Install
 
-### Linux and macOS
-
-Detect your platform and download the right binary in one step:
+### Linux
 
 ```sh
-OS=$(uname -s)
-ARCH=$(uname -m)
-
-case "${OS}-${ARCH}" in
-  Linux-x86_64)  FILE="exceltocsv-linux-amd64" ;;
-  Darwin-arm64)  FILE="exceltocsv-macos-arm64" ;;
-  Darwin-x86_64) FILE="exceltocsv-macos-amd64" ;;
-  *) echo "Unsupported: ${OS} ${ARCH}"; exit 1 ;;
-esac
-
-curl -fL "https://github.com/bruceoutdoors/exceltocsv/releases/latest/download/${FILE}" -o exceltocsv
+curl -fL https://github.com/bruceoutdoors/exceltocsv/releases/latest/download/exceltocsv-linux-amd64 -o exceltocsv
 chmod +x exceltocsv
 ```
 
 Verify the checksum:
 
 ```sh
-curl -fL "https://github.com/bruceoutdoors/exceltocsv/releases/latest/download/${FILE}.sha256" | sha256sum -c
+curl -fL https://github.com/bruceoutdoors/exceltocsv/releases/latest/download/exceltocsv-linux-amd64.sha256 | sha256sum -c
 ```
 
-### Windows
+### macOS and Windows
 
-Download `exceltocsv-windows-amd64.exe` from the [Releases page](../../releases).
+Build from source — see [Build](#build) below.
 
 ### WASI module
 
-Download `exceltocsv.wasm` from the [Releases page](../../releases). A `.sha256` checksum file is included for each artifact.
+Download `exceltocsv.wasm` from the [Releases page](../../releases). A `.sha256` checksum file is included.
 
 ## Usage
 
 ```bash
 # Convert first sheet to CSV on stdout
 exceltocsv input.xlsx > output.csv
+
+# Read from stdin (format auto-detected from file magic bytes)
+cat input.xlsx | exceltocsv > output.csv
+cat input.xls  | exceltocsv -f xls > output.csv
 
 # List all worksheet names
 exceltocsv --names input.xlsx
@@ -59,29 +55,26 @@ exceltocsv --tabs input.xlsx > output.tsv
 exceltocsv -d '|' input.xlsx > output.psv
 
 # Write all sheets to individual CSV files using sheet names
-exceltocsv --write-sheets all --use-sheet-names input.xlsx
+exceltocsv --write-sheets - --use-sheet-names input.xlsx
 ```
 
 Full option reference:
 
 ```text
--f, --format <FMT>         Explicit format: xls or xlsx
--n, --names                List worksheet names and exit
-    --sheet <NAME>         Select worksheet by name (default: first sheet)
-    --write-sheets <S>     Comma-separated sheet names or "all"; write each to a file
-    --use-sheet-names      Use sheet names as output filenames (with --write-sheets)
-    --reset-dimensions     Accepted but not yet implemented (calamine limitation)
-    --encoding-xls <E>     Informational in v0.1.0; calamine defaults to CP1252 for XLS
--d, --delimiter <CHAR>     Output delimiter (default: comma)
--t, --tabs                 Use tab as delimiter
--q, --quotechar <CHAR>     Quote character (default: double-quote)
--u, --quoting <MODE>       minimal | all | nonnumeric | none
--b, --no-doublequote       Disable double-quote escaping; requires --escapechar
--p, --escapechar <CHAR>    Escape character (used with --no-doublequote)
--z, --field-size-limit <N> Field size limit in bytes (informational)
+-f, --format <FMT>     Force format: xls or xlsx (required for stdin if auto-detection fails)
+-n, --names            List worksheet names and exit
+    --sheet <NAME>     Select worksheet by name (default: first sheet)
+    --write-sheets <S> Write sheets to .csv files; - for all, or comma-separated names
+    --use-sheet-names  Use sheet names as output filenames (requires --write-sheets)
+-d, --delimiter <C>    Output delimiter character (default: comma)
+-t, --tabs             Use tab as delimiter
+-q, --quotechar <C>    Quote character (default: double-quote)
+-u, --quoting <MODE>   minimal | all | nonnumeric | none
+-b, --no-doublequote   Disable double-quote escaping (requires --escapechar)
+-p, --escapechar <C>   Escape character (used with --no-doublequote)
 ```
 
-Note: CSV output uses LF line endings (`\n`). RFC 4180 specifies CRLF but LF is conventional on Unix and avoids test friction.
+Note: CSV output uses LF line endings (`\n`). RFC 4180 specifies CRLF, but LF is conventional on Unix and avoids test friction.
 
 ## Build
 
