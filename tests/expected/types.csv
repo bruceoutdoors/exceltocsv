@@ -5,3 +5,5 @@ empty,
 integer,42
 float,3.14
 date,2024-01-15
+datetime_ms,2024-03-15T14:30:45.500
+leading_zero,007

@@ -116,6 +116,16 @@ fn types_xlsx() -> Result<()> {
     ws.write(6, 0, "date")?;
     ws.write_with_format(6, 1, &date, &date_fmt)?;
 
+    // Datetime with milliseconds
+    let dt_fmt = Format::new().set_num_format("yyyy-mm-dd hh:mm:ss.000");
+    let dt_with_ms = ExcelDateTime::from_ymd(2024, 3, 15)?.and_hms_milli(14, 30, 45, 500)?;
+    ws.write(7, 0, "datetime_ms")?;
+    ws.write_with_format(7, 1, &dt_with_ms, &dt_fmt)?;
+
+    // Leading-zero string (written as text, not number)
+    ws.write(8, 0, "leading_zero")?;
+    ws.write(8, 1, "007")?;
+
     wb.save(Path::new("tests/fixtures/types.xlsx"))?;
     Ok(())
 }

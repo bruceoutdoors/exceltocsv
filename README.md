@@ -47,9 +47,9 @@ Options:
   -D, --out-delimiter <CHAR>      Output CSV delimiter character (default: comma)
   -T, --out-tabs                  Use tab as delimiter
   -Q, --out-quotechar <CHAR>      CSV quote character (default: double-quote)
-  -U, --out-quoting <MODE>        Quoting mode: 0=minimal 1=all 2=nonnumeric 3=none (mode 3 requires --out-escapechar)
+  -U, --out-quoting <MODE>        Quoting mode: 0=minimal 1=all 2=nonnumeric
   -B, --out-no-doublequote        Disable double-quote escaping; use escape character instead
-  -P, --out-escapechar <CHAR>     Escape character (used with --out-no-doublequote or --out-quoting 3)
+  -P, --out-escapechar <CHAR>     Escape character (used with --out-no-doublequote)
   -M, --out-lineterminator <EOL>  Line terminator: lf (default) or crlf [possible values: lf, crlf]
   -h, --help                      Print help
   -V, --version                   Print version

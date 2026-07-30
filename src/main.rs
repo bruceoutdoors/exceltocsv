@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use calamine::{
-    open_workbook_auto, open_workbook_auto_from_rs, open_workbook_from_rs, Data, Range, Reader,
-    Sheets, Xls, Xlsx,
+    open_workbook_auto, open_workbook_auto_from_rs, open_workbook_from_rs, Data, DataRef, Range,
+    Reader, Sheets, Xls, Xlsx,
 };
 use clap::{Parser, ValueEnum};
 use csv::WriterBuilder;
@@ -54,7 +54,7 @@ struct Args {
     #[arg(short = 'Q', long = "out-quotechar", value_name = "CHAR", value_parser = parse_ascii_byte)]
     out_quotechar: Option<u8>,
 
-    /// Quoting mode: 0=minimal 1=all 2=nonnumeric 3=none (mode 3 requires --out-escapechar)
+    /// Quoting mode: 0=minimal 1=all 2=nonnumeric
     #[arg(short = 'U', long = "out-quoting", value_name = "MODE")]
     out_quoting: Option<u8>,
 
@@ -62,7 +62,7 @@ struct Args {
     #[arg(short = 'B', long = "out-no-doublequote", requires = "out_escapechar")]
     out_no_doublequote: bool,
 
-    /// Escape character (used with --out-no-doublequote or --out-quoting 3)
+    /// Escape character (used with --out-no-doublequote)
     #[arg(short = 'P', long = "out-escapechar", value_name = "CHAR", value_parser = parse_ascii_byte)]
     out_escapechar: Option<u8>,
 
@@ -86,12 +86,11 @@ enum LineTerminator {
 fn main() -> Result<()> {
     let args = Args::parse();
 
-    if args.out_quoting == Some(3) && args.out_escapechar.is_none() {
-        anyhow::bail!("--out-quoting 3 (none) requires --out-escapechar");
-    }
     if let Some(q) = args.out_quoting {
-        if q > 3 {
-            anyhow::bail!("--out-quoting must be 0-3 (0=minimal, 1=all, 2=nonnumeric, 3=none)");
+        if q > 2 {
+            anyhow::bail!(
+                "--out-quoting {q} is not supported; valid modes: 0=minimal 1=all 2=nonnumeric"
+            );
         }
     }
 
@@ -138,6 +137,10 @@ fn main() -> Result<()> {
 }
 
 fn process_workbook<RS: Read + Seek>(wb: &mut Sheets<RS>, args: &Args) -> Result<()> {
+    if matches!(wb, Sheets::Xlsb(_) | Sheets::Ods(_)) {
+        anyhow::bail!("unsupported format: only XLS (.xls) and XLSX (.xlsx) are accepted");
+    }
+
     let sheet_names = wb.sheet_names();
 
     if args.names {
@@ -187,15 +190,10 @@ fn process_workbook<RS: Read + Seek>(wb: &mut Sheets<RS>, args: &Args) -> Result
         let mut created: Vec<String> = Vec::new();
         let result = (|| -> Result<()> {
             for (name, filename) in &plan {
-                let range = wb
-                    .worksheet_range(name)
-                    .with_context(|| format!("sheet '{name}' not found"))?;
-
                 let file = File::create_new(filename)
                     .with_context(|| format!("cannot create '{filename}': file already exists"))?;
                 created.push(filename.clone());
-
-                write_range(&range, file, args)?;
+                convert_sheet(wb, name, file, args)?;
             }
             Ok(())
         })();
@@ -216,12 +214,119 @@ fn process_workbook<RS: Read + Seek>(wb: &mut Sheets<RS>, args: &Args) -> Result
         .or_else(|| sheet_names.first().map(String::as_str))
         .context("workbook has no sheets")?;
 
-    let range = wb
-        .worksheet_range(sheet_name)
-        .with_context(|| format!("sheet '{sheet_name}' not found"))?;
-
+    let sheet_name = sheet_name.to_owned(); // need owned to avoid borrow conflicts
     let stdout = io::stdout();
-    write_range(&range, stdout.lock(), args)
+    convert_sheet(wb, &sheet_name, stdout.lock(), args)
+}
+
+fn convert_sheet<RS: Read + Seek>(
+    wb: &mut Sheets<RS>,
+    name: &str,
+    writer: impl Write,
+    args: &Args,
+) -> Result<()> {
+    match wb {
+        Sheets::Xlsx(xlsx) => write_xlsx_streaming(xlsx, name, writer, args),
+        _ => {
+            let range = wb
+                .worksheet_range(name)
+                .with_context(|| format!("sheet '{name}' not found"))?;
+            write_range(&range, writer, args)
+        }
+    }
+}
+
+fn write_xlsx_streaming<RS: Read + Seek>(
+    xlsx: &mut Xlsx<RS>,
+    name: &str,
+    writer: impl Write,
+    args: &Args,
+) -> Result<()> {
+    const MAX_ROW: u32 = 1_048_576;
+    const MAX_COL: u32 = 16_384;
+
+    let mut cells = xlsx
+        .worksheet_cells_reader(name)
+        .map_err(|e| anyhow::anyhow!("sheet '{name}' not found: {e}"))?;
+
+    let dims = cells.dimensions();
+    if dims.end.0 >= MAX_ROW || dims.end.1 >= MAX_COL {
+        anyhow::bail!(
+            "sheet declares dimensions ({} rows × {} cols) exceeding XLSX limits",
+            dims.end.0 + 1,
+            dims.end.1 + 1
+        );
+    }
+    let n_cols = (dims.end.1 + 1) as usize;
+
+    let mut wtr = build_csv_writer(writer, args);
+    let mut cur_row = u32::MAX; // sentinel: no row started yet
+    let mut row_buf: Vec<String> = Vec::new();
+
+    while let Some(cell) = cells.next_cell().map_err(|e| anyhow::anyhow!("{e}"))? {
+        let (row, col) = cell.get_position();
+        if row >= MAX_ROW || col >= MAX_COL {
+            anyhow::bail!("cell at row {row} col {col} exceeds XLSX limits");
+        }
+
+        if row != cur_row {
+            if cur_row != u32::MAX {
+                // Pad and flush the previous row
+                while row_buf.len() < n_cols {
+                    row_buf.push(String::new());
+                }
+                wtr.write_record(row_buf.iter())?;
+                row_buf.clear();
+            }
+            cur_row = row;
+        }
+
+        // Fill column gap with empty fields
+        while row_buf.len() < col as usize {
+            row_buf.push(String::new());
+        }
+        row_buf.push(render_data_ref(cell.get_value()));
+    }
+
+    // Flush the final row
+    if cur_row != u32::MAX {
+        while row_buf.len() < n_cols {
+            row_buf.push(String::new());
+        }
+        wtr.write_record(row_buf.iter())?;
+    }
+
+    wtr.flush()?;
+    Ok(())
+}
+
+fn build_csv_writer<W: Write>(writer: W, args: &Args) -> csv::Writer<W> {
+    let delimiter = if args.out_tabs {
+        b'\t'
+    } else {
+        args.out_delimiter.unwrap_or(b',')
+    };
+    let quote = args.out_quotechar.unwrap_or(b'"');
+    let quote_style = match args.out_quoting {
+        Some(1) => csv::QuoteStyle::Always,
+        Some(2) => csv::QuoteStyle::NonNumeric,
+        _ => csv::QuoteStyle::Necessary,
+    };
+    let terminator = match &args.out_lineterminator {
+        Some(LineTerminator::Crlf) => csv::Terminator::CRLF,
+        _ => csv::Terminator::Any(b'\n'),
+    };
+    let mut builder = WriterBuilder::new();
+    builder
+        .delimiter(delimiter)
+        .quote(quote)
+        .quote_style(quote_style)
+        .double_quote(!args.out_no_doublequote)
+        .terminator(terminator);
+    if let Some(esc) = args.out_escapechar {
+        builder.escape(esc);
+    }
+    builder.from_writer(writer)
 }
 
 fn sanitize_sheet_name(name: &str) -> String {
@@ -233,46 +338,26 @@ fn sanitize_sheet_name(name: &str) -> String {
             c => c,
         })
         .collect();
-
-    let s = s.trim();
-    match s {
+    let s = s.trim().to_string();
+    let s = match s.as_str() {
         "" | "." | ".." => "sheet".to_string(),
-        s if s.starts_with('.') => format!("_{}", &s[1..]),
-        s => s.to_string(),
+        trimmed if trimmed.starts_with('.') => format!("_{}", &trimmed[1..]),
+        _ => s,
+    };
+    // Truncate to 200 bytes (POSIX NAME_MAX is 255; .csv adds 4)
+    if s.len() > 200 {
+        let mut end = 200;
+        while !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        s[..end].to_string()
+    } else {
+        s
     }
 }
 
 fn write_range<W: Write>(range: &Range<Data>, writer: W, args: &Args) -> Result<()> {
-    let delimiter = if args.out_tabs {
-        b'\t'
-    } else {
-        args.out_delimiter.unwrap_or(b',')
-    };
-    let quote = args.out_quotechar.unwrap_or(b'"');
-    let quote_style = match args.out_quoting {
-        Some(1) => csv::QuoteStyle::Always,
-        Some(2) => csv::QuoteStyle::NonNumeric,
-        Some(3) => csv::QuoteStyle::Never,
-        _ => csv::QuoteStyle::Necessary,
-    };
-    let terminator = match &args.out_lineterminator {
-        Some(LineTerminator::Crlf) => csv::Terminator::CRLF,
-        _ => csv::Terminator::Any(b'\n'),
-    };
-
-    let mut builder = WriterBuilder::new();
-    builder
-        .delimiter(delimiter)
-        .quote(quote)
-        .quote_style(quote_style)
-        .double_quote(!args.out_no_doublequote)
-        .terminator(terminator);
-
-    if let Some(esc) = args.out_escapechar {
-        builder.escape(esc);
-    }
-
-    let mut wtr = builder.from_writer(writer);
+    let mut wtr = build_csv_writer(writer, args);
     for row in range.rows() {
         wtr.write_record(row.iter().map(render_cell))?;
     }
@@ -301,6 +386,20 @@ fn render_cell(cell: &Data) -> String {
     }
 }
 
+fn render_data_ref(cell: &DataRef) -> String {
+    match cell {
+        DataRef::Empty => String::new(),
+        DataRef::String(s) => s.clone(),
+        DataRef::SharedString(s) => s.to_string(),
+        DataRef::DateTimeIso(s) | DataRef::DurationIso(s) => s.clone(),
+        DataRef::Int(i) => i.to_string(),
+        DataRef::Float(f) => f.to_string(),
+        DataRef::Bool(b) => if *b { "true" } else { "false" }.to_string(),
+        DataRef::Error(e) => e.to_string(),
+        DataRef::DateTime(d) => render_datetime(d),
+    }
+}
+
 fn render_datetime(d: &calamine::ExcelDateTime) -> String {
     if d.is_duration() {
         let total_secs = (d.as_f64() * 86400.0).round() as i64;
@@ -309,11 +408,64 @@ fn render_datetime(d: &calamine::ExcelDateTime) -> String {
         let s = total_secs % 60;
         format!("{h:02}:{m:02}:{s:02}")
     } else {
-        let (year, month, day, hour, min, sec, _) = d.to_ymd_hms_milli();
-        if hour == 0 && min == 0 && sec == 0 {
+        let (year, month, day, hour, min, sec, milli) = d.to_ymd_hms_milli();
+        if hour == 0 && min == 0 && sec == 0 && milli == 0 {
             format!("{year:04}-{month:02}-{day:02}")
-        } else {
+        } else if milli == 0 {
             format!("{year:04}-{month:02}-{day:02}T{hour:02}:{min:02}:{sec:02}")
+        } else {
+            format!("{year:04}-{month:02}-{day:02}T{hour:02}:{min:02}:{sec:02}.{milli:03}")
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sanitize_path_traversal() {
+        assert_eq!(sanitize_sheet_name("../outside"), "_._outside");
+    }
+
+    #[test]
+    fn sanitize_absolute_path() {
+        // leading slash becomes underscore (not a special case)
+        assert_eq!(sanitize_sheet_name("/absolute"), "_absolute");
+    }
+
+    #[test]
+    fn sanitize_hidden_dot() {
+        assert_eq!(sanitize_sheet_name(".hidden"), "_hidden");
+    }
+
+    #[test]
+    fn sanitize_dot_and_dotdot() {
+        assert_eq!(sanitize_sheet_name("."), "sheet");
+        assert_eq!(sanitize_sheet_name(".."), "sheet");
+    }
+
+    #[test]
+    fn sanitize_control_chars() {
+        assert_eq!(sanitize_sheet_name("col\x00name"), "col_name");
+    }
+
+    #[test]
+    fn sanitize_empty() {
+        assert_eq!(sanitize_sheet_name(""), "sheet");
+        assert_eq!(sanitize_sheet_name("   "), "sheet");
+    }
+
+    #[test]
+    fn sanitize_long_name() {
+        let long = "a".repeat(300);
+        let result = sanitize_sheet_name(&long);
+        assert_eq!(result.len(), 200);
+    }
+
+    #[test]
+    fn sanitize_normal() {
+        assert_eq!(sanitize_sheet_name("Sheet 1"), "Sheet 1");
+        assert_eq!(sanitize_sheet_name("Q1 Sales"), "Q1 Sales");
     }
 }
