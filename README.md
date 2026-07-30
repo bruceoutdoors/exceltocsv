@@ -1,35 +1,41 @@
 # exceltocsv
 
-Converts Excel files (XLS, XLSX) to CSV output.
-
-## Why this exists
-
-User-uploaded Excel files need to be converted to CSV inside a narrow, embeddable execution boundary. `exceltocsv` runs as a WASI module so it can be embedded in a host application with no OS-level process spawning. It also builds as a native binary for local testing.
-
-## Why it is intentionally small
-
-This is not a general-purpose spreadsheet engine. It is a small, auditable Excel-to-CSV converter. The entire conversion path is: read Excel with `calamine`, stream rows through the `csv` crate, write to stdout. Nothing more.
+Converts Excel files (XLS, XLSX) to CSV. Uses [in2csv](https://csvkit.readthedocs.io/en/latest/scripts/in2csv.html)-compatible flags for drop-in use in existing scripts. Ships as a native binary for Linux, macOS, and Windows, and as a WASI module for embedding in host runtimes.
 
 ## Install
 
-Download the latest binary from the [GitHub Releases page](../../releases).
+### Linux and macOS
 
-**Linux (native binary):**
+Detect your platform and download the right binary in one step:
 
-```bash
-curl -L https://github.com/bruceoutdoors/exceltocsv/releases/latest/download/exceltocsv-linux-amd64 -o exceltocsv
+```sh
+OS=$(uname -s)
+ARCH=$(uname -m)
+
+case "${OS}-${ARCH}" in
+  Linux-x86_64)  FILE="exceltocsv-linux-amd64" ;;
+  Darwin-arm64)  FILE="exceltocsv-macos-arm64" ;;
+  Darwin-x86_64) FILE="exceltocsv-macos-amd64" ;;
+  *) echo "Unsupported: ${OS} ${ARCH}"; exit 1 ;;
+esac
+
+curl -fL "https://github.com/bruceoutdoors/exceltocsv/releases/latest/download/${FILE}" -o exceltocsv
 chmod +x exceltocsv
 ```
 
 Verify the checksum:
 
-```bash
-curl -L https://github.com/bruceoutdoors/exceltocsv/releases/latest/download/exceltocsv-linux-amd64.sha256 | sha256sum -c
+```sh
+curl -fL "https://github.com/bruceoutdoors/exceltocsv/releases/latest/download/${FILE}.sha256" | sha256sum -c
 ```
 
-**WASI module:**
+### Windows
 
-Download `exceltocsv.wasm` and `exceltocsv.wasm.sha256` from the releases page.
+Download `exceltocsv-windows-amd64.exe` from the [Releases page](../../releases).
+
+### WASI module
+
+Download `exceltocsv.wasm` from the [Releases page](../../releases). A `.sha256` checksum file is included for each artifact.
 
 ## Usage
 
@@ -76,12 +82,7 @@ Note: CSV output uses LF line endings (`\n`). RFC 4180 specifies CRLF but LF is 
 
 ## Build
 
-**Prerequisites:** Rust >= 1.88, `wasm32-wasip1` target, and `wasm-tools`.
-
-```bash
-rustup target add wasm32-wasip1
-cargo install wasm-tools
-```
+**Prerequisites:** Rust >= 1.88.
 
 **Native binary:**
 
@@ -90,16 +91,13 @@ cargo build --release
 # artifact: target/release/exceltocsv
 ```
 
-**WASI module:**
+**WASI module** (requires the `wasm32-wasip1` target and `wasm-tools`):
 
 ```bash
+rustup target add wasm32-wasip1
+cargo install wasm-tools
+
 cargo build --target wasm32-wasip1 --release
-# artifact: target/wasm32-wasip1/release/exceltocsv.wasm
-```
-
-Strip debug symbols to reduce WASM size:
-
-```bash
 wasm-tools strip target/wasm32-wasip1/release/exceltocsv.wasm -o exceltocsv.wasm
 ```
 
@@ -139,8 +137,6 @@ Tests assert exact byte-for-byte CSV output against files in `tests/expected/`.
 
 ## Alternatives
 
-If you need a general-purpose Excel-to-CSV converter without the WASI constraint, these tools cover more ground:
-
-- [in2csv](https://csvkit.readthedocs.io/en/latest/scripts/in2csv.html) (Python, part of csvkit) — the CLI that inspired this tool's flag set
-- [xsv](https://github.com/BurntSushi/xsv) — fast CSV toolkit in Rust, handles CSV manipulation once you have the CSV
-- [ssconvert](https://wiki.gnome.org/Projects/Gnumeric/ssconvert) — part of Gnumeric, converts between many spreadsheet formats
+- [in2csv](https://csvkit.readthedocs.io/en/latest/scripts/in2csv.html) (Python, part of csvkit) — the CLI that inspired this tool's flag set; handles more formats and has richer type inference
+- [xsv](https://github.com/BurntSushi/xsv) — fast CSV toolkit in Rust; handles CSV manipulation once you have the CSV
+- [ssconvert](https://wiki.gnome.org/Projects/Gnumeric/ssconvert) — part of Gnumeric; converts between many spreadsheet formats
