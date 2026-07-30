@@ -1,0 +1,42 @@
+name: PR
+
+on:
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c  # master
+        with:
+          toolchain: stable
+          targets: wasm32-wasip1
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        with:
+          shared-key: rust
+
+      - run: cargo fmt --check
+
+      - run: cargo clippy --locked --all-targets -- -D warnings
+
+      - run: cargo test --locked
+
+      - run: cargo build --locked --release
+
+      - run: cargo build --locked --target wasm32-wasip1 --release
+
+      - uses: bytecodealliance/actions/wasmtime/setup@7ee36389ead2e51422087f820a7e17e39811b05f
+
+      - name: WASI smoke test
+        run: |
+          wasmtime run target/wasm32-wasip1/release/exceltocsv.wasm \
+            < tests/fixtures/simple.xlsx > output.csv
+          cmp output.csv tests/expected/simple.csv
