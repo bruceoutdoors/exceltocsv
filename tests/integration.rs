@@ -315,3 +315,133 @@ fn unsupported_format_ods_content() {
     let (_, _, ok) = run_with_stdin(&["-f", "xlsx"], b"not a workbook");
     assert!(!ok);
 }
+
+// ── Sparse XLSX (two-pass streaming) ─────────────────────────────────────────
+
+#[test]
+fn sparse_xlsx_preserves_empty_rows_and_columns() {
+    let (out, _, ok) = run(&["tests/fixtures/sparse.xlsx"]);
+    assert!(ok);
+    assert_eq!(out, expected("sparse.csv"));
+}
+
+// ── Adversarial XLSX fixtures ─────────────────────────────────────────────────
+//
+// Build minimal in-memory XLSX ZIPs to exercise the streaming state machine
+// without committing adversarial binary fixtures.
+
+fn make_xlsx_with_sheet_xml(sheet_xml: &str) -> Vec<u8> {
+    use std::io::Write as _;
+    use zip::{write::SimpleFileOptions, CompressionMethod, ZipWriter};
+
+    let cursor = std::io::Cursor::new(Vec::new());
+    let mut zip = ZipWriter::new(cursor);
+    let stored = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+
+    zip.start_file("[Content_Types].xml", stored).unwrap();
+    zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>"#).unwrap();
+
+    zip.start_file("_rels/.rels", stored).unwrap();
+    zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>"#).unwrap();
+
+    zip.start_file("xl/workbook.xml", stored).unwrap();
+    zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets></workbook>"#).unwrap();
+
+    zip.start_file("xl/_rels/workbook.xml.rels", stored)
+        .unwrap();
+    zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>"#).unwrap();
+
+    zip.start_file("xl/worksheets/sheet1.xml", stored).unwrap();
+    zip.write_all(sheet_xml.as_bytes()).unwrap();
+
+    zip.start_file("xl/styles.xml", stored).unwrap();
+    zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts><font/></fonts><fills><fill/><fill/></fills><borders><border/></borders><cellStyleXfs><xf/></cellStyleXfs><cellXfs><xf/></cellXfs></styleSheet>"#).unwrap();
+
+    zip.finish().unwrap().into_inner()
+}
+
+#[test]
+fn xlsx_duplicate_cell_rejected() {
+    // Two cells sharing the same coordinate must be rejected to prevent
+    // unbounded row_buf growth (each duplicate appends another String).
+    let bytes = make_xlsx_with_sheet_xml(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>
+    <row r="1">
+      <c r="A1"><v>1</v></c>
+      <c r="A1"><v>2</v></c>
+    </row>
+  </sheetData>
+</worksheet>"#,
+    );
+    let (_, err, ok) = run_with_stdin(&["-f", "xlsx"], &bytes);
+    assert!(!ok, "duplicate cell should be rejected");
+    let msg = String::from_utf8_lossy(&err);
+    assert!(
+        msg.contains("out-of-order") || msg.contains("duplicate"),
+        "unexpected error: {msg}"
+    );
+}
+
+#[test]
+fn xlsx_out_of_order_col_rejected() {
+    // B1 before A1 — lexicographically decreasing within a row.
+    let bytes = make_xlsx_with_sheet_xml(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>
+    <row r="1">
+      <c r="B1"><v>2</v></c>
+      <c r="A1"><v>1</v></c>
+    </row>
+  </sheetData>
+</worksheet>"#,
+    );
+    let (_, err, ok) = run_with_stdin(&["-f", "xlsx"], &bytes);
+    assert!(!ok, "out-of-order column should be rejected");
+    let msg = String::from_utf8_lossy(&err);
+    assert!(
+        msg.contains("out-of-order") || msg.contains("duplicate"),
+        "unexpected error: {msg}"
+    );
+}
+
+#[test]
+fn xlsx_out_of_order_row_rejected() {
+    // Row 2 before row 1 — rows decrease.
+    let bytes = make_xlsx_with_sheet_xml(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>
+    <row r="2">
+      <c r="A2"><v>2</v></c>
+    </row>
+    <row r="1">
+      <c r="A1"><v>1</v></c>
+    </row>
+  </sheetData>
+</worksheet>"#,
+    );
+    let (_, err, ok) = run_with_stdin(&["-f", "xlsx"], &bytes);
+    assert!(!ok, "out-of-order row should be rejected");
+    let msg = String::from_utf8_lossy(&err);
+    assert!(
+        msg.contains("out-of-order") || msg.contains("duplicate"),
+        "unexpected error: {msg}"
+    );
+}
+
+#[test]
+fn xlsx_empty_sheet_ok() {
+    // Sheet with no cells should produce empty output, not an error.
+    let bytes = make_xlsx_with_sheet_xml(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData/>
+</worksheet>"#,
+    );
+    let (out, _, ok) = run_with_stdin(&["-f", "xlsx"], &bytes);
+    assert!(ok, "empty sheet should succeed");
+    assert_eq!(out, b"");
+}

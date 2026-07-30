@@ -11,6 +11,7 @@ fn main() -> Result<()> {
     quoted_values_xlsx()?;
     unicode_xlsx()?;
     types_xlsx()?;
+    sparse_xlsx()?;
 
     println!("XLSX fixtures written to tests/fixtures/");
     Ok(())
@@ -127,5 +128,18 @@ fn types_xlsx() -> Result<()> {
     ws.write(8, 1, "007")?;
 
     wb.save(Path::new("tests/fixtures/types.xlsx"))?;
+    Ok(())
+}
+
+fn sparse_xlsx() -> Result<()> {
+    let mut wb = Workbook::new();
+    let ws = wb.add_worksheet();
+    // Row 0: only col 0 populated
+    ws.write(0, 0, "A1")?;
+    // Row 1: intentionally empty
+    // Row 2: col 0 and col 2 populated; col 1 is a gap
+    ws.write(2, 0, "A3")?;
+    ws.write(2, 2, "C3")?;
+    wb.save(Path::new("tests/fixtures/sparse.xlsx"))?;
     Ok(())
 }

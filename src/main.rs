@@ -245,54 +245,79 @@ fn write_xlsx_streaming<RS: Read + Seek>(
     const MAX_ROW: u32 = 1_048_576;
     const MAX_COL: u32 = 16_384;
 
+    // Pass 1: validate strict monotonic ordering and compute actual bounds.
+    // Trusting declared dimensions is unsafe — a crafted workbook can declare
+    // A1:XFD1048576 while repeating A1 millions of times to exhaust memory.
+    let actual_max_col = {
+        let mut cells = xlsx
+            .worksheet_cells_reader(name)
+            .map_err(|e| anyhow::anyhow!("sheet '{name}' not found: {e}"))?;
+
+        let mut prev: Option<(u32, u32)> = None;
+        let mut max_row: Option<u32> = None;
+        let mut max_col: Option<u32> = None;
+
+        while let Some(cell) = cells.next_cell().map_err(|e| anyhow::anyhow!("{e}"))? {
+            let pos = cell.get_position();
+            if pos.0 >= MAX_ROW || pos.1 >= MAX_COL {
+                anyhow::bail!("cell at row {} col {} exceeds XLSX limits", pos.0, pos.1);
+            }
+            if let Some(p) = prev {
+                if pos <= p {
+                    anyhow::bail!(
+                        "out-of-order or duplicate cell at ({},{}), previous ({},{})",
+                        pos.0,
+                        pos.1,
+                        p.0,
+                        p.1
+                    );
+                }
+            }
+            prev = Some(pos);
+            max_row = Some(pos.0);
+            max_col = Some(max_col.map_or(pos.1, |m: u32| m.max(pos.1)));
+        }
+
+        match (max_row, max_col) {
+            (Some(_), Some(c)) => c,
+            _ => return Ok(()), // empty sheet
+        }
+    };
+
+    let n_cols = (actual_max_col + 1) as usize;
+
+    // Pass 2: emit rows, preserving empty rows for gaps between data rows.
     let mut cells = xlsx
         .worksheet_cells_reader(name)
-        .map_err(|e| anyhow::anyhow!("sheet '{name}' not found: {e}"))?;
-
-    let dims = cells.dimensions();
-    if dims.end.0 >= MAX_ROW || dims.end.1 >= MAX_COL {
-        anyhow::bail!(
-            "sheet declares dimensions ({} rows × {} cols) exceeding XLSX limits",
-            dims.end.0 + 1,
-            dims.end.1 + 1
-        );
-    }
-    let n_cols = (dims.end.1 + 1) as usize;
+        .map_err(|e| anyhow::anyhow!("sheet '{name}': {e}"))?;
 
     let mut wtr = build_csv_writer(writer, args);
-    let mut cur_row = u32::MAX; // sentinel: no row started yet
-    let mut row_buf: Vec<String> = Vec::new();
+    let mut cur_row: Option<u32> = None;
+    let mut row_buf: Vec<String> = Vec::with_capacity(n_cols);
 
     while let Some(cell) = cells.next_cell().map_err(|e| anyhow::anyhow!("{e}"))? {
         let (row, col) = cell.get_position();
-        if row >= MAX_ROW || col >= MAX_COL {
-            anyhow::bail!("cell at row {row} col {col} exceeds XLSX limits");
-        }
 
-        if row != cur_row {
-            if cur_row != u32::MAX {
-                // Pad and flush the previous row
-                while row_buf.len() < n_cols {
-                    row_buf.push(String::new());
-                }
+        if Some(row) != cur_row {
+            if let Some(prev_row) = cur_row {
+                row_buf.resize(n_cols, String::new());
                 wtr.write_record(row_buf.iter())?;
                 row_buf.clear();
+                // Emit one empty record per skipped row to preserve structure.
+                for _ in (prev_row + 1)..row {
+                    wtr.write_record(std::iter::repeat_n("", n_cols))?;
+                }
             }
-            cur_row = row;
+            cur_row = Some(row);
         }
 
-        // Fill column gap with empty fields
-        while row_buf.len() < col as usize {
-            row_buf.push(String::new());
-        }
+        // Fill column gap; strictly increasing col means this only grows row_buf.
+        row_buf.resize(col as usize, String::new());
         row_buf.push(render_data_ref(cell.get_value()));
     }
 
-    // Flush the final row
-    if cur_row != u32::MAX {
-        while row_buf.len() < n_cols {
-            row_buf.push(String::new());
-        }
+    if cur_row.is_some() {
+        row_buf.resize(n_cols, String::new());
         wtr.write_record(row_buf.iter())?;
     }
 
