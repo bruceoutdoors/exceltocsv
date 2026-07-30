@@ -1,0 +1,27 @@
+name: PR
+
+on:
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c  # master
+        with:
+          toolchain: stable
+          targets: wasm32-wasip1
+          components: rustfmt, clippy
+
+      - run: cargo fmt --check
+
+      - run: cargo clippy --all-targets -- -D warnings
+
+      - run: cargo test
+
+      - run: cargo build --release
+
+      - run: cargo build --target wasm32-wasip1 --release

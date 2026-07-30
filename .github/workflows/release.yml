@@ -1,0 +1,45 @@
+name: Release
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c  # master
+        with:
+          toolchain: stable
+          targets: wasm32-wasip1
+
+      - run: cargo test
+
+      - run: cargo build --release
+
+      - run: cargo build --target wasm32-wasip1 --release
+
+      - name: Install wasm-tools
+        run: cargo install wasm-tools
+
+      - name: Strip WASM debug symbols
+        run: wasm-tools strip target/wasm32-wasip1/release/exceltocsv.wasm -o exceltocsv.wasm
+
+      - name: Rename native binary
+        run: cp target/release/exceltocsv exceltocsv-linux-amd64
+
+      - name: Generate SHA256 checksums
+        run: sha256sum exceltocsv-linux-amd64 exceltocsv.wasm > SHA256SUMS
+
+      - name: Upload release artifacts
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228  # v3.0.2
+        with:
+          files: |
+            exceltocsv-linux-amd64
+            exceltocsv.wasm
+            SHA256SUMS

@@ -1,0 +1,32 @@
+[package]
+name = "exceltocsv"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+
+[features]
+generate-fixtures = ["dep:rust_xlsxwriter"]
+
+[dependencies]
+calamine = "0.36"
+clap = { version = "4", features = ["derive"] }
+csv = "1"
+anyhow = "1"
+rust_xlsxwriter = { version = "0.87", optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+opt-level = 3
+lto = true
+strip = "symbols"
+
+[[bin]]
+name = "exceltocsv"
+path = "src/main.rs"
+
+[[bin]]
+name = "generate_fixtures"
+path = "src/bin/generate_fixtures.rs"
+required-features = ["generate-fixtures"]
