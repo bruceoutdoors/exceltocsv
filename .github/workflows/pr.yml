@@ -34,8 +34,6 @@ jobs:
       - run: cargo build --locked --target wasm32-wasip1 --release
 
       - uses: bytecodealliance/actions/wasmtime/setup@7ee36389ead2e51422087f820a7e17e39811b05f
-        with:
-          version: "26.0.0"
 
       - name: WASI smoke test
         run: |
