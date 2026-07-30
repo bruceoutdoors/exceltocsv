@@ -6,7 +6,15 @@ fn bin() -> Command {
 }
 
 fn run(args: &[&str]) -> (String, String, bool) {
-    let out = bin().args(args).output().expect("failed to run exceltocsv");
+    run_in(Path::new("."), args)
+}
+
+fn run_in(dir: &Path, args: &[&str]) -> (String, String, bool) {
+    let out = bin()
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .expect("failed to run exceltocsv");
     (
         String::from_utf8_lossy(&out.stdout).into_owned(),
         String::from_utf8_lossy(&out.stderr).into_owned(),
@@ -88,16 +96,11 @@ fn custom_delimiter() {
 fn write_sheets_all() {
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/multiple_sheets.xlsx");
     let dir = tempfile::tempdir().expect("tempdir");
-    let out = bin()
-        .args(["--write-sheets", "all", fixture.to_str().unwrap()])
-        .current_dir(dir.path())
-        .output()
-        .expect("run");
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
+    let (_, err, ok) = run_in(
+        dir.path(),
+        &["--write-sheets", "all", fixture.to_str().unwrap()],
     );
+    assert!(ok, "{err}");
     assert!(
         dir.path().join("sheet1.csv").exists(),
         "sheet1.csv not created"
@@ -112,21 +115,16 @@ fn write_sheets_all() {
 fn write_sheets_use_names() {
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/multiple_sheets.xlsx");
     let dir = tempfile::tempdir().expect("tempdir");
-    let out = bin()
-        .args([
+    let (_, err, ok) = run_in(
+        dir.path(),
+        &[
             "--write-sheets",
             "all",
             "--use-sheet-names",
             fixture.to_str().unwrap(),
-        ])
-        .current_dir(dir.path())
-        .output()
-        .expect("run");
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
+        ],
     );
+    assert!(ok, "{err}");
     assert!(
         dir.path().join("Sheet1.csv").exists(),
         "Sheet1.csv not created"

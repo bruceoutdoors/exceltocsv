@@ -25,7 +25,7 @@ jobs:
       - run: cargo build --target wasm32-wasip1 --release
 
       - name: Install wasm-tools
-        run: cargo install wasm-tools
+        run: cargo install wasm-tools --version 1.254.0 --locked
 
       - name: Strip WASM debug symbols
         run: wasm-tools strip target/wasm32-wasip1/release/exceltocsv.wasm -o exceltocsv.wasm
