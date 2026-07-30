@@ -1,6 +1,9 @@
 # exceltocsv
 
-Converts Excel files (XLS, XLSX) to CSV. Uses [in2csv](https://csvkit.readthedocs.io/en/latest/scripts/in2csv.html)-compatible flags for drop-in use in existing scripts. Ships as a native binary for Linux, macOS, and Windows, and as a WASI module for embedding in host runtimes.
+CLI to convert Excel files (XLS, XLSX) to CSV. Use as a native binaries, and as a WASI module for embedding in host runtimes.
+
+ - Lightweight, fast, with no runtime dependencies
+ - Embeddable to applications via WASI - sandbox untrusted excel files with restrictions to resources and capabilities.
 
 ## Install
 
@@ -105,16 +108,6 @@ wasm-tools strip target/wasm32-wasip1/release/exceltocsv.wasm -o exceltocsv.wasm
 
 Correctness is verified against known XLS/XLSX fixtures with exact expected CSV outputs.
 
-**Fixture files:**
-
-| Fixture | Tests |
-| --- | --- |
-| `tests/fixtures/simple.xlsx` | Basic XLSX conversion, integer and float rendering |
-| `tests/fixtures/simple.xls` | Legacy XLS format parity |
-| `tests/fixtures/multiple_sheets.xlsx` | Sheet listing, sheet selection |
-| `tests/fixtures/quoted_values.xlsx` | Cells with commas, embedded newlines, double-quotes |
-| `tests/fixtures/unicode.xlsx` | CJK and non-ASCII characters |
-
 **Generate XLSX fixtures** (once, after a clean clone):
 
 ```bash
@@ -138,5 +131,3 @@ Tests assert exact byte-for-byte CSV output against files in `tests/expected/`.
 ## Alternatives
 
 - [in2csv](https://csvkit.readthedocs.io/en/latest/scripts/in2csv.html) (Python, part of csvkit) — the CLI that inspired this tool's flag set; handles more formats and has richer type inference
-- [xsv](https://github.com/BurntSushi/xsv) — fast CSV toolkit in Rust; handles CSV manipulation once you have the CSV
-- [ssconvert](https://wiki.gnome.org/Projects/Gnumeric/ssconvert) — part of Gnumeric; converts between many spreadsheet formats
