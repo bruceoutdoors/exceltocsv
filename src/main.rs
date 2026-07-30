@@ -245,65 +245,57 @@ fn write_xlsx_streaming<RS: Read + Seek>(
     const MAX_ROW: u32 = 1_048_576;
     const MAX_COL: u32 = 16_384;
 
-    // Pass 1: validate strict monotonic ordering and compute actual bounds.
-    // Trusting declared dimensions is unsafe — a crafted workbook can declare
-    // A1:XFD1048576 while repeating A1 millions of times to exhaust memory.
-    let actual_max_col = {
-        let mut cells = xlsx
-            .worksheet_cells_reader(name)
-            .map_err(|e| anyhow::anyhow!("sheet '{name}' not found: {e}"))?;
-
-        let mut prev: Option<(u32, u32)> = None;
-        let mut max_row: Option<u32> = None;
-        let mut max_col: Option<u32> = None;
-
-        while let Some(cell) = cells.next_cell().map_err(|e| anyhow::anyhow!("{e}"))? {
-            let pos = cell.get_position();
-            if pos.0 >= MAX_ROW || pos.1 >= MAX_COL {
-                anyhow::bail!("cell at row {} col {} exceeds XLSX limits", pos.0, pos.1);
-            }
-            if let Some(p) = prev {
-                if pos <= p {
-                    anyhow::bail!(
-                        "out-of-order or duplicate cell at ({},{}), previous ({},{})",
-                        pos.0,
-                        pos.1,
-                        p.0,
-                        p.1
-                    );
-                }
-            }
-            prev = Some(pos);
-            max_row = Some(pos.0);
-            max_col = Some(max_col.map_or(pos.1, |m: u32| m.max(pos.1)));
-        }
-
-        match (max_row, max_col) {
-            (Some(_), Some(c)) => c,
-            _ => return Ok(()), // empty sheet
-        }
-    };
-
-    let n_cols = (actual_max_col + 1) as usize;
-
-    // Pass 2: emit rows, preserving empty rows for gaps between data rows.
     let mut cells = xlsx
         .worksheet_cells_reader(name)
-        .map_err(|e| anyhow::anyhow!("sheet '{name}': {e}"))?;
+        .map_err(|e| anyhow::anyhow!("sheet '{name}' not found: {e}"))?;
+
+    // Use declared dimensions for record width; bail if they exceed XLSX limits.
+    // This is safe because:
+    //   (a) cells outside declared bounds are rejected as malformed below,
+    //   (b) duplicate/out-of-order cells are rejected, preventing unbounded
+    //       row_buf growth, and
+    //   (c) the maximum width is capped at MAX_COL = 16 384 columns.
+    let d = cells.dimensions();
+    if d.end.0 >= MAX_ROW || d.end.1 >= MAX_COL {
+        anyhow::bail!(
+            "sheet declares ({} rows × {} cols) exceeding XLSX limits",
+            d.end.0 + 1,
+            d.end.1 + 1
+        );
+    }
+    let n_cols = (d.end.1 + 1) as usize;
 
     let mut wtr = build_csv_writer(writer, args);
+    let mut prev_pos: Option<(u32, u32)> = None;
     let mut cur_row: Option<u32> = None;
     let mut row_buf: Vec<String> = Vec::with_capacity(n_cols);
 
     while let Some(cell) = cells.next_cell().map_err(|e| anyhow::anyhow!("{e}"))? {
         let (row, col) = cell.get_position();
+        if row >= MAX_ROW || col >= MAX_COL {
+            anyhow::bail!("cell at ({row},{col}) exceeds XLSX limits");
+        }
+        // Reject cells outside declared sheet extents (malformed file).
+        if col as usize >= n_cols {
+            anyhow::bail!("cell at col {col} is outside declared sheet width ({n_cols} cols)");
+        }
+        // Require strict ordering to prevent duplicate-cell row_buf amplification.
+        if let Some(p) = prev_pos {
+            if (row, col) <= p {
+                anyhow::bail!(
+                    "out-of-order or duplicate cell at ({row},{col}), previous ({},{})",
+                    p.0,
+                    p.1
+                );
+            }
+        }
+        prev_pos = Some((row, col));
 
         if Some(row) != cur_row {
             if let Some(prev_row) = cur_row {
                 row_buf.resize(n_cols, String::new());
                 wtr.write_record(row_buf.iter())?;
                 row_buf.clear();
-                // Emit one empty record per skipped row to preserve structure.
                 for _ in (prev_row + 1)..row {
                     wtr.write_record(std::iter::repeat_n("", n_cols))?;
                 }
@@ -311,7 +303,7 @@ fn write_xlsx_streaming<RS: Read + Seek>(
             cur_row = Some(row);
         }
 
-        // Fill column gap; strictly increasing col means this only grows row_buf.
+        // Fill column gap; strictly increasing col guarantees this only grows row_buf.
         row_buf.resize(col as usize, String::new());
         row_buf.push(render_data_ref(cell.get_value()));
     }

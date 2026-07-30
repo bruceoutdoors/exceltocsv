@@ -367,6 +367,7 @@ fn xlsx_duplicate_cell_rejected() {
     let bytes = make_xlsx_with_sheet_xml(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <dimension ref="A1:A1"/>
   <sheetData>
     <row r="1">
       <c r="A1"><v>1</v></c>
@@ -386,10 +387,12 @@ fn xlsx_duplicate_cell_rejected() {
 
 #[test]
 fn xlsx_out_of_order_col_rejected() {
-    // B1 before A1 — lexicographically decreasing within a row.
+    // B1 before A1: declare both columns in the dimension so the ordering
+    // check (not the bounds check) triggers.
     let bytes = make_xlsx_with_sheet_xml(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <dimension ref="A1:B1"/>
   <sheetData>
     <row r="1">
       <c r="B1"><v>2</v></c>
@@ -409,10 +412,12 @@ fn xlsx_out_of_order_col_rejected() {
 
 #[test]
 fn xlsx_out_of_order_row_rejected() {
-    // Row 2 before row 1 — rows decrease.
+    // Row 2 before row 1: declare both rows in the dimension so the
+    // ordering check triggers.
     let bytes = make_xlsx_with_sheet_xml(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <dimension ref="A1:A2"/>
   <sheetData>
     <row r="2">
       <c r="A2"><v>2</v></c>
