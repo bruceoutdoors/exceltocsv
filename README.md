@@ -7,7 +7,7 @@ CLI to convert Excel files (XLS, XLSX) to CSV. Ships as a Linux binary and as a 
 
 ## Why this exists
 
-Existing converters ([in2csv](https://csvkit.readthedocs.io/en/latest/scripts/in2csv.html), [xlsx2csv](https://github.com/dilshod/xlsx2csv)) require a Python runtime. Heavier tools ([LibreOffice](https://www.libreoffice.org/), [Gnumeric's ssconvert](https://wiki.gnome.org/Projects/Gnumeric/ssconvert)) are large system dependencies. Browser-oriented WebAssembly packages such as [SheetJS](https://sheetjs.com/) target JavaScript runtimes, not WASI. Direct library integration works but produces a one-off binary rather than a reusable conversion boundary. This tool fills the gap: a small, auditable XLS/XLSX-to-CSV converter distributed as a stripped WASI module for sandboxed embedding, with a Linux binary for direct use and scripting.
+Existing converters ([in2csv](https://csvkit.readthedocs.io/en/latest/scripts/in2csv.html), [xlsx2csv](https://github.com/dilshod/xlsx2csv)) require a Python runtime. Heavier tools ([LibreOffice](https://www.libreoffice.org/), [Gnumeric's ssconvert](https://wiki.gnome.org/Projects/Gnumeric/ssconvert)) are large system dependencies. Browser-oriented WebAssembly packages such as [SheetJS](https://sheetjs.com/) target JavaScript runtimes, not WASI. Direct library integration works but produces a one-off binary rather than a reusable conversion boundary. This tool fills the gap: a small XLS/XLSX-to-CSV converter distributed as a stripped WASI module for sandboxed embedding, with a Linux binary for direct use and scripting.
 
 ## Install
 
