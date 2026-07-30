@@ -9,7 +9,7 @@ license = "MIT"
 generate-fixtures = ["dep:rust_xlsxwriter"]
 
 [dependencies]
-calamine = "0.36"
+calamine = { version = "0.36", features = ["chrono"] }
 clap = { version = "4", features = ["derive"] }
 csv = "1"
 anyhow = "1"

@@ -1,10 +1,12 @@
-use std::collections::HashMap;
-use std::io::{self, BufWriter, Cursor, Read, Write};
+use std::collections::{HashMap, HashSet};
+use std::fs::File;
+use std::io::{self, BufReader, Cursor, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use calamine::{
-    open_workbook_auto_from_rs, open_workbook_from_rs, Data, Range, Reader, Sheets, Xls, Xlsx,
+    open_workbook_auto, open_workbook_auto_from_rs, open_workbook_from_rs, Data, Range, Reader,
+    Sheets, Xls, Xlsx,
 };
 use clap::{Parser, ValueEnum};
 use csv::WriterBuilder;
@@ -20,14 +22,19 @@ struct Args {
     format: Option<Format>,
 
     /// Print worksheet names to stdout and exit
-    #[arg(short = 'n', long)]
+    #[arg(
+        short = 'n',
+        long,
+        conflicts_with = "sheet",
+        conflicts_with = "write_sheets"
+    )]
     names: bool,
 
     /// Select worksheet by name (default: first sheet)
-    #[arg(long, value_name = "NAME")]
+    #[arg(long, value_name = "NAME", conflicts_with = "write_sheets")]
     sheet: Option<String>,
 
-    /// Write all sheets to .csv files; use - for all, or comma-separated sheet names
+    /// Write sheets to .csv files; - for all, or comma-separated names
     #[arg(long = "write-sheets", value_name = "SHEETS")]
     write_sheets: Option<String>,
 
@@ -36,28 +43,32 @@ struct Args {
     use_sheet_names: bool,
 
     /// Output CSV delimiter character (default: comma)
-    #[arg(short = 'd', long, value_name = "CHAR", value_parser = parse_ascii_byte)]
-    delimiter: Option<u8>,
+    #[arg(short = 'D', long = "out-delimiter", value_name = "CHAR", value_parser = parse_ascii_byte)]
+    out_delimiter: Option<u8>,
 
     /// Use tab as delimiter
-    #[arg(short = 't', long, conflicts_with = "delimiter")]
-    tabs: bool,
+    #[arg(short = 'T', long = "out-tabs", conflicts_with = "out_delimiter")]
+    out_tabs: bool,
 
     /// CSV quote character (default: double-quote)
-    #[arg(short = 'q', long, value_name = "CHAR", value_parser = parse_ascii_byte)]
-    quotechar: Option<u8>,
+    #[arg(short = 'Q', long = "out-quotechar", value_name = "CHAR", value_parser = parse_ascii_byte)]
+    out_quotechar: Option<u8>,
 
-    /// Quoting mode
-    #[arg(short = 'u', long, value_name = "MODE")]
-    quoting: Option<QuoteMode>,
+    /// Quoting mode: 0=minimal 1=all 2=nonnumeric 3=none (mode 3 requires --out-escapechar)
+    #[arg(short = 'U', long = "out-quoting", value_name = "MODE")]
+    out_quoting: Option<u8>,
 
     /// Disable double-quote escaping; use escape character instead
-    #[arg(short = 'b', long = "no-doublequote", requires = "escapechar")]
-    no_doublequote: bool,
+    #[arg(short = 'B', long = "out-no-doublequote", requires = "out_escapechar")]
+    out_no_doublequote: bool,
 
-    /// Escape character (used when --no-doublequote is set)
-    #[arg(short = 'p', long, value_name = "CHAR", value_parser = parse_ascii_byte)]
-    escapechar: Option<u8>,
+    /// Escape character (used with --out-no-doublequote or --out-quoting 3)
+    #[arg(short = 'P', long = "out-escapechar", value_name = "CHAR", value_parser = parse_ascii_byte)]
+    out_escapechar: Option<u8>,
+
+    /// Line terminator: lf (default) or crlf
+    #[arg(short = 'M', long = "out-lineterminator", value_name = "EOL")]
+    out_lineterminator: Option<LineTerminator>,
 }
 
 #[derive(Clone, Debug, ValueEnum)]
@@ -67,53 +78,67 @@ enum Format {
 }
 
 #[derive(Clone, Debug, ValueEnum)]
-enum QuoteMode {
-    Minimal,
-    All,
-    Nonnumeric,
-    None,
+enum LineTerminator {
+    Lf,
+    Crlf,
 }
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    let bytes = load_input(&args.input)?;
-    let cursor = Cursor::new(bytes);
 
-    let mut wb: Sheets<Cursor<Vec<u8>>> = match args.format {
-        Some(Format::Xls) => open_workbook_from_rs::<Xls<_>, _>(cursor)
-            .map(Sheets::Xls)
-            .map_err(|e| anyhow::anyhow!("failed to open workbook as XLS: {e}"))?,
-        Some(Format::Xlsx) => open_workbook_from_rs::<Xlsx<_>, _>(cursor)
-            .map(Sheets::Xlsx)
-            .map_err(|e| anyhow::anyhow!("failed to open workbook as XLSX: {e}"))?,
-        None => open_workbook_auto_from_rs(cursor).map_err(|_| {
-            anyhow::anyhow!(
-                "cannot detect workbook format; try specifying --format xls or --format xlsx"
-            )
-        })?,
-    };
+    if args.out_quoting == Some(3) && args.out_escapechar.is_none() {
+        anyhow::bail!("--out-quoting 3 (none) requires --out-escapechar");
+    }
+    if let Some(q) = args.out_quoting {
+        if q > 3 {
+            anyhow::bail!("--out-quoting must be 0-3 (0=minimal, 1=all, 2=nonnumeric, 3=none)");
+        }
+    }
 
-    process_workbook(&mut wb, &args)
-}
+    let is_stdin = args.input.is_none() || args.input.as_deref() == Some(Path::new("-"));
 
-fn load_input(input: &Option<PathBuf>) -> Result<Vec<u8>> {
-    match input {
-        None => read_stdin(),
-        Some(p) if p == Path::new("-") => read_stdin(),
-        Some(p) => std::fs::read(p).with_context(|| format!("cannot open '{}'", p.display())),
+    if is_stdin {
+        let mut buf = Vec::new();
+        io::stdin()
+            .read_to_end(&mut buf)
+            .context("failed to read stdin")?;
+        let cursor = Cursor::new(buf);
+        let mut wb: Sheets<Cursor<Vec<u8>>> = match &args.format {
+            Some(Format::Xls) => open_workbook_from_rs::<Xls<_>, _>(cursor)
+                .map(Sheets::Xls)
+                .map_err(|e| anyhow::anyhow!("failed to open as XLS: {e}"))?,
+            Some(Format::Xlsx) => open_workbook_from_rs::<Xlsx<_>, _>(cursor)
+                .map(Sheets::Xlsx)
+                .map_err(|e| anyhow::anyhow!("failed to open as XLSX: {e}"))?,
+            None => open_workbook_auto_from_rs(cursor)
+                .map_err(|_| anyhow::anyhow!("cannot detect workbook format; try --format"))?,
+        };
+        process_workbook(&mut wb, &args)
+    } else {
+        let path = args.input.as_deref().unwrap();
+        let mut wb: Sheets<BufReader<File>> = match &args.format {
+            Some(fmt) => {
+                let f = File::open(path)
+                    .with_context(|| format!("cannot open '{}'", path.display()))?;
+                let br = BufReader::new(f);
+                match fmt {
+                    Format::Xls => open_workbook_from_rs::<Xls<_>, _>(br)
+                        .map(Sheets::Xls)
+                        .map_err(|e| anyhow::anyhow!("failed to open as XLS: {e}"))?,
+                    Format::Xlsx => open_workbook_from_rs::<Xlsx<_>, _>(br)
+                        .map(Sheets::Xlsx)
+                        .map_err(|e| anyhow::anyhow!("failed to open as XLSX: {e}"))?,
+                }
+            }
+            None => open_workbook_auto(path)
+                .with_context(|| format!("cannot open '{}'", path.display()))?,
+        };
+        process_workbook(&mut wb, &args)
     }
 }
 
-fn read_stdin() -> Result<Vec<u8>> {
-    let mut buf = Vec::new();
-    io::stdin()
-        .read_to_end(&mut buf)
-        .context("failed to read stdin")?;
-    Ok(buf)
-}
-
-fn process_workbook(wb: &mut Sheets<Cursor<Vec<u8>>>, args: &Args) -> Result<()> {
-    let sheet_names = wb.sheet_names().to_vec();
+fn process_workbook<RS: Read + Seek>(wb: &mut Sheets<RS>, args: &Args) -> Result<()> {
+    let sheet_names = wb.sheet_names();
 
     if args.names {
         for name in &sheet_names {
@@ -129,12 +154,12 @@ fn process_workbook(wb: &mut Sheets<Cursor<Vec<u8>>>, args: &Args) -> Result<()>
             spec.split(',').map(|s| s.trim().to_owned()).collect()
         };
 
-        let mut used: HashMap<String, usize> = HashMap::new();
-        for name in &targets {
-            let range = wb
-                .worksheet_range(name)
-                .with_context(|| format!("sheet '{name}' not found"))?;
+        // Pre-allocate all filenames upfront for complete collision detection
+        let mut filename_set: HashSet<String> = HashSet::new();
+        let mut plan: Vec<(String, String)> = Vec::with_capacity(targets.len());
+        let mut base_counts: HashMap<String, usize> = HashMap::new();
 
+        for name in &targets {
             let base = if args.use_sheet_names {
                 sanitize_sheet_name(name)
             } else {
@@ -142,18 +167,46 @@ fn process_workbook(wb: &mut Sheets<Cursor<Vec<u8>>>, args: &Args) -> Result<()>
                 format!("sheet{}", idx + 1)
             };
 
-            let count = used.entry(base.clone()).or_insert(0);
-            let filename = if *count == 0 {
-                format!("{base}.csv")
-            } else {
-                format!("{base}_{count}.csv")
+            let counter = base_counts.entry(base.clone()).or_insert(0);
+            let filename = loop {
+                let candidate = if *counter == 0 {
+                    format!("{base}.csv")
+                } else {
+                    format!("{base}_{counter}.csv")
+                };
+                *counter += 1;
+                if !filename_set.contains(&candidate) {
+                    break candidate;
+                }
             };
-            *count += 1;
-
-            let file = std::fs::File::create(&filename)
-                .with_context(|| format!("cannot create '{filename}'"))?;
-            write_range(&range, BufWriter::new(file), args)?;
+            filename_set.insert(filename.clone());
+            plan.push((name.clone(), filename));
         }
+
+        // Write files, cleaning up any created files on failure
+        let mut created: Vec<String> = Vec::new();
+        let result = (|| -> Result<()> {
+            for (name, filename) in &plan {
+                let range = wb
+                    .worksheet_range(name)
+                    .with_context(|| format!("sheet '{name}' not found"))?;
+
+                let file = File::create_new(filename)
+                    .with_context(|| format!("cannot create '{filename}': file already exists"))?;
+                created.push(filename.clone());
+
+                write_range(&range, file, args)?;
+            }
+            Ok(())
+        })();
+
+        if let Err(e) = result {
+            for f in &created {
+                let _ = std::fs::remove_file(f);
+            }
+            return Err(e);
+        }
+
         return Ok(());
     }
 
@@ -190,17 +243,21 @@ fn sanitize_sheet_name(name: &str) -> String {
 }
 
 fn write_range<W: Write>(range: &Range<Data>, writer: W, args: &Args) -> Result<()> {
-    let delimiter = if args.tabs {
+    let delimiter = if args.out_tabs {
         b'\t'
     } else {
-        args.delimiter.unwrap_or(b',')
+        args.out_delimiter.unwrap_or(b',')
     };
-    let quote = args.quotechar.unwrap_or(b'"');
-    let quote_style = match &args.quoting {
-        Some(QuoteMode::All) => csv::QuoteStyle::Always,
-        Some(QuoteMode::Nonnumeric) => csv::QuoteStyle::NonNumeric,
-        Some(QuoteMode::None) => csv::QuoteStyle::Never,
+    let quote = args.out_quotechar.unwrap_or(b'"');
+    let quote_style = match args.out_quoting {
+        Some(1) => csv::QuoteStyle::Always,
+        Some(2) => csv::QuoteStyle::NonNumeric,
+        Some(3) => csv::QuoteStyle::Never,
         _ => csv::QuoteStyle::Necessary,
+    };
+    let terminator = match &args.out_lineterminator {
+        Some(LineTerminator::Crlf) => csv::Terminator::CRLF,
+        _ => csv::Terminator::Any(b'\n'),
     };
 
     let mut builder = WriterBuilder::new();
@@ -208,10 +265,10 @@ fn write_range<W: Write>(range: &Range<Data>, writer: W, args: &Args) -> Result<
         .delimiter(delimiter)
         .quote(quote)
         .quote_style(quote_style)
-        .double_quote(!args.no_doublequote)
-        .terminator(csv::Terminator::Any(b'\n'));
+        .double_quote(!args.out_no_doublequote)
+        .terminator(terminator);
 
-    if let Some(esc) = args.escapechar {
+    if let Some(esc) = args.out_escapechar {
         builder.escape(esc);
     }
 
@@ -238,8 +295,25 @@ fn render_cell(cell: &Data) -> String {
         Data::String(s) | Data::DateTimeIso(s) | Data::DurationIso(s) => s.clone(),
         Data::Int(i) => i.to_string(),
         Data::Float(f) => f.to_string(),
-        Data::DateTime(d) => d.as_f64().to_string(),
-        Data::Bool(b) => b.to_string(),
-        Data::Error(_) => "#ERROR".to_string(),
+        Data::Bool(b) => if *b { "true" } else { "false" }.to_string(),
+        Data::Error(e) => e.to_string(),
+        Data::DateTime(d) => render_datetime(d),
+    }
+}
+
+fn render_datetime(d: &calamine::ExcelDateTime) -> String {
+    if d.is_duration() {
+        let total_secs = (d.as_f64() * 86400.0).round() as i64;
+        let h = total_secs / 3600;
+        let m = (total_secs % 3600) / 60;
+        let s = total_secs % 60;
+        format!("{h:02}:{m:02}:{s:02}")
+    } else {
+        let (year, month, day, hour, min, sec, _) = d.to_ymd_hms_milli();
+        if hour == 0 && min == 0 && sec == 0 {
+            format!("{year:04}-{month:02}-{day:02}")
+        } else {
+            format!("{year:04}-{month:02}-{day:02}T{hour:02}:{min:02}:{sec:02}")
+        }
     }
 }

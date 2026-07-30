@@ -1,0 +1,7 @@
+type,value
+bool_true,true
+bool_false,false
+empty,
+integer,42
+float,3.14
+date,2024-01-15

@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use anyhow::Result;
-use rust_xlsxwriter::Workbook;
+use rust_xlsxwriter::{ExcelDateTime, Format, Workbook};
 
 fn main() -> Result<()> {
     std::fs::create_dir_all("tests/fixtures")?;
@@ -10,6 +10,7 @@ fn main() -> Result<()> {
     multiple_sheets_xlsx()?;
     quoted_values_xlsx()?;
     unicode_xlsx()?;
+    types_xlsx()?;
 
     println!("XLSX fixtures written to tests/fixtures/");
     Ok(())
@@ -83,5 +84,38 @@ fn unicode_xlsx() -> Result<()> {
     ws.write(3, 0, "Siti")?;
     ws.write(3, 1, "Johor Bahru")?;
     wb.save(Path::new("tests/fixtures/unicode.xlsx"))?;
+    Ok(())
+}
+
+fn types_xlsx() -> Result<()> {
+    let mut wb = Workbook::new();
+    let ws = wb.add_worksheet();
+    ws.set_name("Types")?;
+
+    ws.write(0, 0, "type")?;
+    ws.write(0, 1, "value")?;
+
+    // Native boolean cells
+    ws.write(1, 0, "bool_true")?;
+    ws.write(1, 1, true)?;
+    ws.write(2, 0, "bool_false")?;
+    ws.write(2, 1, false)?;
+
+    // Empty cell (sparse — col 1 intentionally omitted)
+    ws.write(3, 0, "empty")?;
+
+    // Integer and float
+    ws.write(4, 0, "integer")?;
+    ws.write(4, 1, 42_i32)?;
+    ws.write(5, 0, "float")?;
+    ws.write(5, 1, 3.14_f64)?;
+
+    // Date cell with format so calamine reads it as DateTime
+    let date_fmt = Format::new().set_num_format("yyyy-mm-dd");
+    let date = ExcelDateTime::from_ymd(2024, 1, 15)?;
+    ws.write(6, 0, "date")?;
+    ws.write_with_format(6, 1, &date, &date_fmt)?;
+
+    wb.save(Path::new("tests/fixtures/types.xlsx"))?;
     Ok(())
 }

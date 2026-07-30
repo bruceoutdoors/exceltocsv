@@ -1,32 +1,22 @@
 # exceltocsv
 
-CLI to convert Excel files (XLS, XLSX) to CSV. Ships as a Linux binary and as a WASI module for embedding in host runtimes.
-
-- Lightweight, fast, with no runtime dependencies
-- Embeddable via WASI — sandbox untrusted workbooks with fine-grained resource and capability limits
+CLI to convert Excel files (XLS, XLSX) to CSV. Available as a Linux binary and as a WASI module for embedding in host runtimes.
 
 ## Why this exists
 
-Existing converters ([in2csv](https://csvkit.readthedocs.io/en/latest/scripts/in2csv.html), [xlsx2csv](https://github.com/dilshod/xlsx2csv)) require a Python runtime. Heavier tools ([LibreOffice](https://www.libreoffice.org/), [Gnumeric's ssconvert](https://wiki.gnome.org/Projects/Gnumeric/ssconvert)) are large system dependencies. Browser-oriented WebAssembly packages such as [SheetJS](https://sheetjs.com/) target JavaScript runtimes, not WASI. Direct library integration works but produces a one-off binary rather than a reusable conversion boundary. This tool fills the gap: a small XLS/XLSX-to-CSV converter distributed as a stripped WASI module for sandboxed embedding, with a Linux binary for direct use and scripting.
+Several capable Excel-to-CSV converters already exist. Lightweight options commonly require a language runtime, while office-suite converters are much larger dependencies, and browser-oriented WebAssembly packages are not standalone WASI command modules. exceltocsv packages this narrow conversion as a Linux CLI and WASI module for applications that want to run it within their own resource and capability limits. It is intentionally not a general spreadsheet engine.
 
 ## Install
 
 ### Linux
 
 ```sh
-curl -fL https://github.com/bruceoutdoors/exceltocsv/releases/latest/download/exceltocsv-linux-amd64 -o exceltocsv
-chmod +x exceltocsv
+curl -fL https://github.com/bruceoutdoors/exceltocsv/releases/latest/download/exceltocsv-linux-amd64 \
+  -o exceltocsv-linux-amd64
+curl -fL https://github.com/bruceoutdoors/exceltocsv/releases/latest/download/exceltocsv-linux-amd64.sha256 \
+  | sha256sum -c
+chmod +x exceltocsv-linux-amd64
 ```
-
-Verify the checksum:
-
-```sh
-curl -fL https://github.com/bruceoutdoors/exceltocsv/releases/latest/download/exceltocsv-linux-amd64.sha256 | sha256sum -c
-```
-
-### macOS and Windows
-
-Build from source — see [Build](#build) below.
 
 ### WASI module
 
@@ -38,7 +28,7 @@ Download `exceltocsv.wasm` from the [Releases page](../../releases). A `.sha256`
 # Convert first sheet to CSV on stdout
 exceltocsv input.xlsx > output.csv
 
-# Read from stdin (format auto-detected from file magic bytes)
+# Read from stdin (format auto-detected from magic bytes)
 cat input.xlsx | exceltocsv > output.csv
 cat input.xls  | exceltocsv -f xls > output.csv
 
@@ -49,32 +39,21 @@ exceltocsv --names input.xlsx
 exceltocsv --sheet "Sales Q1" input.xlsx > sales.csv
 
 # Tab-delimited output
-exceltocsv --tabs input.xlsx > output.tsv
+exceltocsv --out-tabs input.xlsx > output.tsv
 
-# Custom delimiter
-exceltocsv -d '|' input.xlsx > output.psv
-
-# Write all sheets to individual CSV files using sheet names
+# Write all sheets to individual CSV files
 exceltocsv --write-sheets - --use-sheet-names input.xlsx
 ```
 
-Full option reference:
+Run `exceltocsv --help` for all options.
 
-```text
--f, --format <FMT>     Force format: xls or xlsx (required for stdin if auto-detection fails)
--n, --names            List worksheet names and exit
-    --sheet <NAME>     Select worksheet by name (default: first sheet)
-    --write-sheets <S> Write sheets to .csv files; - for all, or comma-separated names
-    --use-sheet-names  Use sheet names as output filenames (requires --write-sheets)
--d, --delimiter <C>    Output delimiter character (default: comma)
--t, --tabs             Use tab as delimiter
--q, --quotechar <C>    Quote character (default: double-quote)
--u, --quoting <MODE>   minimal | all | nonnumeric | none
--b, --no-doublequote   Disable double-quote escaping (requires --escapechar)
--p, --escapechar <C>   Escape character (used with --no-doublequote)
-```
+## Security
 
-Note: CSV output uses LF line endings (`\n`). RFC 4180 specifies CRLF, but LF is conventional on Unix and avoids test friction.
+The WASI build runs within whatever capabilities the host grants. File access, CPU time, and memory are all host-controlled.
+
+The native build buffers the entire input in memory when reading from stdin. For large files, pass the file path directly — that path uses streaming I/O without reading the full file upfront.
+
+exceltocsv does not evaluate formulas. Formula cells are output as their last-computed value as stored in the file. Formula injection (cells beginning with `=`, `-`, `+`, or `@`) is not escaped; if the CSV output is opened in a spreadsheet application, those cells may be evaluated.
 
 ## Build
 
@@ -99,28 +78,15 @@ wasm-tools strip target/wasm32-wasip1/release/exceltocsv.wasm -o exceltocsv.wasm
 
 ## Testing
 
-Correctness is verified against known XLS/XLSX fixtures with exact expected CSV outputs.
-
-**Generate XLSX fixtures** (once, after a clean clone):
-
-```bash
-cargo run --bin generate_fixtures --features generate-fixtures
-```
-
-**Generate the XLS fixture** (requires [uv](https://docs.astral.sh/uv/)):
-
-```bash
-uv run tools/generate_fixtures.py
-```
-
-**Run tests:**
-
 ```bash
 cargo test
 ```
 
-Tests assert exact byte-for-byte CSV output against files in `tests/expected/`.
+Tests assert exact byte-for-byte CSV output against files in `tests/expected/`. See [tools/README.md](tools/README.md) for fixture generation instructions.
 
 ## Alternatives
 
-- [in2csv](https://csvkit.readthedocs.io/en/latest/scripts/in2csv.html) (Python, part of csvkit) — the CLI that inspired this tool's flag set; handles more formats and has richer type inference
+- [in2csv](https://csvkit.readthedocs.io/en/latest/scripts/in2csv.html) (Python, part of csvkit) — the CLI that inspired this tool's flag conventions; handles more formats and has richer type inference
+- [xlsx2csv](https://github.com/dilshod/xlsx2csv) (Python) — lightweight XLSX-only converter
+- [LibreOffice](https://www.libreoffice.org/) / [Gnumeric ssconvert](https://wiki.gnome.org/Projects/Gnumeric/ssconvert) — full office suites with headless conversion; large system dependencies
+- [SheetJS](https://sheetjs.com/) — comprehensive JavaScript library; targets browser/Node runtimes, not standalone WASI

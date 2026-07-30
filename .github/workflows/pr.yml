@@ -6,6 +6,9 @@ on:
 jobs:
   check:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -22,26 +25,20 @@ jobs:
 
       - run: cargo fmt --check
 
-      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo clippy --locked --all-targets -- -D warnings
 
-      - run: cargo test
+      - run: cargo test --locked
 
-      - run: cargo build --release
+      - run: cargo build --locked --release
 
-      - run: cargo build --target wasm32-wasip1 --release
+      - run: cargo build --locked --target wasm32-wasip1 --release
 
-      - name: Install wasmtime
-        run: |
-          WASMTIME_VER="26.0.0"
-          curl -fL "https://github.com/bytecodealliance/wasmtime/releases/download/v${WASMTIME_VER}/wasmtime-v${WASMTIME_VER}-x86_64-linux.tar.xz" \
-            -o /tmp/wasmtime.tar.xz
-          mkdir -p /tmp/wasmtime
-          tar -xJf /tmp/wasmtime.tar.xz -C /tmp/wasmtime --strip-components=1
-          echo "/tmp/wasmtime" >> "$GITHUB_PATH"
+      - uses: bytecodealliance/actions/wasmtime/setup@7ee36389ead2e51422087f820a7e17e39811b05f
+        with:
+          version: "26.0.0"
 
       - name: WASI smoke test
         run: |
-          wasmtime run --dir . \
-            target/wasm32-wasip1/release/exceltocsv.wasm \
-            tests/fixtures/simple.xlsx > /tmp/wasi_out.csv
-          diff /tmp/wasi_out.csv tests/expected/simple.csv
+          wasmtime run target/wasm32-wasip1/release/exceltocsv.wasm \
+            < tests/fixtures/simple.xlsx > output.csv
+          cmp output.csv tests/expected/simple.csv
