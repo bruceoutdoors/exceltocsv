@@ -47,14 +47,6 @@ exceltocsv --write-sheets - --use-sheet-names input.xlsx
 
 Run `exceltocsv --help` for all options.
 
-## Security
-
-The WASI build runs within whatever capabilities the host grants. File access, CPU time, and memory are all host-controlled.
-
-The native build buffers the entire input in memory when reading from stdin. For large files, pass the file path directly — that path uses streaming I/O without reading the full file upfront.
-
-exceltocsv does not evaluate formulas. Formula cells are output as their last-computed value as stored in the file. Formula injection (cells beginning with `=`, `-`, `+`, or `@`) is not escaped; if the CSV output is opened in a spreadsheet application, those cells may be evaluated.
-
 ## Build
 
 **Prerequisites:** Rust >= 1.88.
