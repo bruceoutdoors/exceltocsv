@@ -121,7 +121,8 @@ Tests assert exact byte-for-byte CSV output against files in `tests/expected/`.
 Each GitHub release includes:
 
 - `exceltocsv-linux-amd64` — native Linux binary
+- `exceltocsv-linux-amd64.sha256` — SHA256 checksum
 - `exceltocsv.wasm` — WASI module (debug symbols stripped)
-- `SHA256SUMS` — checksums for both artifacts
+- `exceltocsv.wasm.sha256` — SHA256 checksum
 
 Find releases at the [GitHub Releases page](../../releases).

@@ -34,12 +34,15 @@ jobs:
         run: cp target/release/exceltocsv exceltocsv-linux-amd64
 
       - name: Generate SHA256 checksums
-        run: sha256sum exceltocsv-linux-amd64 exceltocsv.wasm > SHA256SUMS
+        run: |
+          sha256sum exceltocsv-linux-amd64 > exceltocsv-linux-amd64.sha256
+          sha256sum exceltocsv.wasm > exceltocsv.wasm.sha256
 
       - name: Upload release artifacts
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228  # v3.0.2
         with:
           files: |
             exceltocsv-linux-amd64
+            exceltocsv-linux-amd64.sha256
             exceltocsv.wasm
-            SHA256SUMS
+            exceltocsv.wasm.sha256
