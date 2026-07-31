@@ -309,9 +309,7 @@ fn xlsx_and_xls_same_output() {
 }
 
 #[test]
-fn unsupported_format_ods_content() {
-    // ODS files start with PK (ZIP) like XLSX, so magic-bytes can't distinguish
-    // Just test that the binary rejects non-workbook content
+fn invalid_workbook_content_rejected() {
     let (_, _, ok) = run_with_stdin(&["-f", "xlsx"], b"not a workbook");
     assert!(!ok);
 }
@@ -440,4 +438,38 @@ fn xlsx_empty_sheet_ok() {
     let (out, _, ok) = run_with_stdin(&["-f", "xlsx"], &bytes);
     assert!(ok, "empty sheet should succeed");
     assert_eq!(out, b"");
+}
+
+// ── ODS format ────────────────────────────────────────────────────────────────
+
+#[test]
+fn simple_ods() {
+    let (out, _, ok) = run(&["tests/fixtures/simple.ods"]);
+    assert!(ok);
+    assert_eq!(out, expected("simple_ods.csv"));
+}
+
+#[test]
+fn stdin_ods_format_flag() {
+    let bytes = fixture_bytes("simple.ods");
+    let (out, _, ok) = run_with_stdin(&["-f", "ods"], &bytes);
+    assert!(ok);
+    assert_eq!(out, expected("simple_ods.csv"));
+}
+
+// ── XLSB format ───────────────────────────────────────────────────────────────
+
+#[test]
+fn any_sheets_xlsb() {
+    let (out, _, ok) = run(&["tests/fixtures/any_sheets.xlsb"]);
+    assert!(ok);
+    assert_eq!(out, expected("any_sheets_xlsb.csv"));
+}
+
+#[test]
+fn stdin_xlsb_format_flag() {
+    let bytes = fixture_bytes("any_sheets.xlsb");
+    let (out, _, ok) = run_with_stdin(&["-f", "xlsb"], &bytes);
+    assert!(ok);
+    assert_eq!(out, expected("any_sheets_xlsb.csv"));
 }
