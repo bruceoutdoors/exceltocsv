@@ -29,14 +29,12 @@ jobs:
 
       - run: cargo test --locked
 
-      - run: cargo build --locked --release
-
-      - run: cargo build --locked --target wasm32-wasip1 --release
+      - run: cargo build --locked --target wasm32-wasip1
 
       - uses: bytecodealliance/actions/wasmtime/setup@7ee36389ead2e51422087f820a7e17e39811b05f
 
       - name: WASI smoke test
         run: |
-          wasmtime run target/wasm32-wasip1/release/exceltocsv.wasm \
+          wasmtime run target/wasm32-wasip1/debug/exceltocsv.wasm \
             < tests/fixtures/simple.xlsx > output.csv
           cmp output.csv tests/expected/simple.csv

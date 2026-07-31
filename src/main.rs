@@ -10,8 +10,8 @@ const XLSX_MAX_ROW: u32 = 1_048_576;
 const XLSX_MAX_COL: u32 = 16_384;
 
 use calamine::{
-    open_workbook_auto, open_workbook_auto_from_rs, open_workbook_from_rs, Data, DataRef, Range,
-    Reader, Sheets, Xls, Xlsx,
+    open_workbook_auto, open_workbook_auto_from_rs, open_workbook_from_rs, Data, DataRef, Ods,
+    Range, Reader, Sheets, Xls, Xlsb, Xlsx,
 };
 use clap::{Parser, ValueEnum};
 use csv::WriterBuilder;
@@ -19,10 +19,10 @@ use csv::WriterBuilder;
 #[derive(Parser, Debug)]
 #[command(name = "exceltocsv", about = "Convert Excel files to CSV", version)]
 struct Args {
-    /// Input Excel file (.xls, .xlsx); omit or use - to read from stdin
+    /// Input Excel file (.xls, .xlsx, .xlsb, .ods); omit or use - to read from stdin
     input: Option<PathBuf>,
 
-    /// Force input format: xls or xlsx (required for stdin if auto-detection fails)
+    /// Force input format: xls, xlsx, xlsb, or ods (required for stdin if auto-detection fails)
     #[arg(short = 'f', long, value_name = "FMT")]
     format: Option<Format>,
 
@@ -80,6 +80,8 @@ struct Args {
 enum Format {
     Xls,
     Xlsx,
+    Xlsb,
+    Ods,
 }
 
 #[derive(Clone, Debug, ValueEnum)]
@@ -114,6 +116,12 @@ fn main() -> Result<()> {
             Some(Format::Xlsx) => open_workbook_from_rs::<Xlsx<_>, _>(cursor)
                 .map(Sheets::Xlsx)
                 .map_err(|e| anyhow::anyhow!("failed to open as XLSX: {e}"))?,
+            Some(Format::Xlsb) => open_workbook_from_rs::<Xlsb<_>, _>(cursor)
+                .map(Sheets::Xlsb)
+                .map_err(|e| anyhow::anyhow!("failed to open as XLSB: {e}"))?,
+            Some(Format::Ods) => open_workbook_from_rs::<Ods<_>, _>(cursor)
+                .map(Sheets::Ods)
+                .map_err(|e| anyhow::anyhow!("failed to open as ODS: {e}"))?,
             None => open_workbook_auto_from_rs(cursor)
                 .map_err(|_| anyhow::anyhow!("cannot detect workbook format; try --format"))?,
         };
@@ -132,6 +140,12 @@ fn main() -> Result<()> {
                     Format::Xlsx => open_workbook_from_rs::<Xlsx<_>, _>(br)
                         .map(Sheets::Xlsx)
                         .map_err(|e| anyhow::anyhow!("failed to open as XLSX: {e}"))?,
+                    Format::Xlsb => open_workbook_from_rs::<Xlsb<_>, _>(br)
+                        .map(Sheets::Xlsb)
+                        .map_err(|e| anyhow::anyhow!("failed to open as XLSB: {e}"))?,
+                    Format::Ods => open_workbook_from_rs::<Ods<_>, _>(br)
+                        .map(Sheets::Ods)
+                        .map_err(|e| anyhow::anyhow!("failed to open as ODS: {e}"))?,
                 }
             }
             None => open_workbook_auto(path)
@@ -228,9 +242,6 @@ fn convert_sheet<RS: Read + Seek>(
 ) -> Result<()> {
     match wb {
         Sheets::Xlsx(xlsx) => write_xlsx_streaming(xlsx, name, writer, args),
-        Sheets::Xlsb(_) | Sheets::Ods(_) => {
-            anyhow::bail!("unsupported format: only XLS (.xls) and XLSX (.xlsx) are accepted")
-        }
         _ => {
             let range = wb
                 .worksheet_range(name)
